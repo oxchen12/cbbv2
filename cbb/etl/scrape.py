@@ -3,8 +3,7 @@ This module provides functions for scraping data from ESPN.
 '''
 from __future__ import annotations
 
-from enum import Enum, auto
-from functools import cache
+from enum import Enum
 from typing import Any
 import json
 import re
@@ -14,12 +13,14 @@ from bs4 import BeautifulSoup
 import requests
 
 
-class Competition(Enum):
+class League(Enum):
+    '''Encodes college basketball leagues.'''
     MENS = 'mens'
     WOMENS = 'womens'
 
 
 class Scraper:
+    '''Scrapes ESPN webpages to obtain college basketball data.'''
     # url construction
     GAME_API_TEMPLATE = (
         'https://site.web.api.espn.com/apis/site/v2/sports/basketball/{}-college-basketball/'
@@ -39,7 +40,7 @@ class Scraper:
     _cache = {}
 
     def __init__(self,
-                 competition: Competition = Competition.MENS):
+                 competition: League = League.MENS):
         self._competition = competition
         self._session = requests.Session()
         self._session.headers.update(Scraper.DEFAULT_HEADERS)
