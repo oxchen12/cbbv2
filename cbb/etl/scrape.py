@@ -45,6 +45,11 @@ class Scraper:
         self._session = requests.Session()
         self._session.headers.update(Scraper.DEFAULT_HEADERS)
 
+    # TODO: look into caching this with staleness checks
+    # For now, this will not cache anything and will always go out
+    # to fetch new information. This should be somewhat okay assuming
+    # intelligent usage (i.e., not re-fetching standings and schedule
+    # for existing seasons).
     def _get_resp(self,
                   url: str,
                   timeout: int = DEFAULT_TIMEOUT,
@@ -90,6 +95,12 @@ class Scraper:
             re.split(r"window\[.*?\]=", html_raw)[2].replace(';', ''))
 
         return json_raw
+
+    def get_raw_game_json(self, gid: int | str) -> dict[str, Any]:
+        '''Get the raw json from the game page.'''
+        # TODO: error logic
+        url = Scraper.GAME_API_TEMPLATE.format(self._competition.value, gid)
+        return self._get_resp(url).json()
 
     def get_raw_standings_json(self, season: int | str) -> dict[str, Any]:
         '''Get the raw json from the standings page for a season.'''
