@@ -3,8 +3,6 @@ This module provides functions for scraping data from ESPN.
 '''
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 import json
 import logging
@@ -12,7 +10,6 @@ import re
 import time
 
 from bs4 import BeautifulSoup
-# TODO: refactor requests to be async
 import requests
 
 logger = logging.getLogger(__name__)
