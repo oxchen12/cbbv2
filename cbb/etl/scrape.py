@@ -3,15 +3,17 @@ This module provides functions for scraping data from ESPN.
 '''
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any
-import asyncio
 import json
 import logging
 import re
 import time
 
 from bs4 import BeautifulSoup
-import aiohttp
+# TODO: refactor requests to be async
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +25,17 @@ GAME_API_TEMPLATE = (
 STANDINGS_TEMPLATE = 'https://www.espn.com/mens-college-basketball/standings/_/season/{}'
 SCHEDULE_TEMPLATE = 'https://www.espn.com/mens-college-basketball/schedule/_/date/{}'
 
+# request parameters
+DEFAULT_TIMEOUT = 30
+DEFAULT_HEADERS = {
+    # TODO: I think this is generic enough that there isn't a security risk
+    #       but I should make sure
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+}
 
-async def _get_resp(session: aiohttp.ClientSession,
-                    url: str) -> aiohttp.ClientResponse:
+
+def _get_resp(url: str,
+              timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
     # TODO: look into caching this with staleness checks
     # For now, this will not cache anything and will always go out
     # to fetch new information. This should be somewhat okay assuming
@@ -35,25 +45,25 @@ async def _get_resp(session: aiohttp.ClientSession,
     # TODO: retry handling
     logger.debug('fetching from %s...', url)
     get_start = time.perf_counter()
-    # TODO: session should configure its own default timeout and headers
-    async with session.get(url) as resp:
-        # TODO: error handling
-        get_end = time.perf_counter() - get_start
-        logger.debug('got %d (%.2fs)', resp.status, get_end)
-        if resp.status != 200:
-            pass
+    resp = requests.get(
+        url=url,
+        timeout=timeout,
+        headers=DEFAULT_HEADERS
+    )
+    get_end = time.perf_counter() - get_start
+    logger.debug('got %d (%.2fs)', resp.status_code, get_end)
+    # TODO: error handling
+    if resp.status_code != 200:
+        pass
 
-        return resp
+    return resp
 
 
-async def _extract_json(session: aiohttp.ClientSession,
-                        url: str) -> dict[str, Any]:
+def _extract_json(url: str) -> dict[str, Any]:
     '''Extract json data from HTML.'''
     # TODO: error logic
-    resp = asyncio.run(_get_resp(session, url))
-    async with resp:
-        text = await resp.text(encoding='utf-8')
-    soup = BeautifulSoup(text, 'html.parser')
+    resp = _get_resp(url)
+    soup = BeautifulSoup(resp.text, 'html.parser')
     html_raw = ''
     for x in soup.find_all('script'):
         if str(x).startswith('<script>window'):
@@ -79,26 +89,22 @@ async def _extract_json(session: aiohttp.ClientSession,
     return json_raw
 
 
-async def get_raw_game_json(session: aiohttp.ClientSession,
-                            gid: int | str) -> dict[str, Any]:
+def get_raw_game_json(gid: int | str) -> dict[str, Any]:
     '''Get the raw json from the game page.'''
     # TODO: error logic
     url = GAME_API_TEMPLATE.format(gid)
-    resp = asyncio.run(_get_resp(session, url))
-    return await resp.json()
+    return _get_resp(url).json()
 
 
-async def get_raw_standings_json(session: aiohttp.ClientSession,
-                                 season: int | str) -> dict[str, Any]:
+def get_raw_standings_json(season: int | str) -> dict[str, Any]:
     '''Get the raw json from the standings page for a season.'''
     # TODO: parameter validation
     url = STANDINGS_TEMPLATE.format(season)
 
-    return asyncio.run(_extract_json(session, url))
+    return _extract_json(url)
 
 
-async def get_raw_schedule_json(session: aiohttp.ClientSession,
-                                date: str) -> dict[str, Any]:
+def get_raw_schedule_json(date: str) -> dict[str, Any]:
     # TODO: accept date as string or dt.date
     '''
     Get the raw json from the schedule page for a given date.
@@ -107,33 +113,4 @@ async def get_raw_schedule_json(session: aiohttp.ClientSession,
     # TODO: parameter validation
     url = SCHEDULE_TEMPLATE.format(date)
 
-    return asyncio.run(_extract_json(session, url))
-
-
-class AsyncScrapeClient:
-    '''Provides an interface for async scraping.'''
-
-    DEFAULT_TIMEOUT = 30
-    DEFAULT_HEADERS = {
-        # TODO: I think this is generic enough that there isn't a security risk
-        #       but I should make sure
-        'User-Agent': 'Mozilla/5.0'
-    }
-
-    def __init__(self):
-        self._session = None
-
-    async def __aenter__(self) -> AsyncScrapeClient:
-        if self._session is None:
-            self._session = aiohttp.ClientSession(
-                headers=AsyncScrapeClient.DEFAULT_HEADERS,
-                # TODO: error logic
-                raise_for_status=False
-            )
-
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        if self._session:
-            await self._session.close()
-            self._session = None
+    return _extract_json(url)
