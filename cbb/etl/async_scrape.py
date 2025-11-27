@@ -24,93 +24,7 @@ STANDINGS_TEMPLATE = 'https://www.espn.com/mens-college-basketball/standings/_/s
 SCHEDULE_TEMPLATE = 'https://www.espn.com/mens-college-basketball/schedule/_/date/{}'
 
 
-async def _get_resp(session: aiohttp.ClientSession,
-                    url: str) -> aiohttp.ClientResponse:
-    # TODO: look into caching this with staleness checks
-    # For now, this will not cache anything and will always go out
-    # to fetch new information. This should be somewhat okay assuming
-    # intelligent usage (i.e., not re-fetching standings and schedule
-    # for existing seasons).
-    '''Get the raw json from the API.'''
-    # TODO: retry handling
-    logger.debug('fetching from %s...', url)
-    get_start = time.perf_counter()
-    # TODO: session should configure its own default timeout and headers
-    async with session.get(url) as resp:
-        # TODO: error handling
-        get_end = time.perf_counter() - get_start
-        logger.debug('got %d (%.2fs)', resp.status, get_end)
-        if resp.status != 200:
-            pass
-
-        return resp
-
-
-async def _extract_json(session: aiohttp.ClientSession,
-                        url: str) -> dict[str, Any]:
-    '''Extract json data from HTML.'''
-    # TODO: error logic
-    resp = asyncio.run(_get_resp(session, url))
-    async with resp:
-        text = await resp.text(encoding='utf-8')
-    soup = BeautifulSoup(text, 'html.parser')
-    html_raw = ''
-    for x in soup.find_all('script'):
-        if str(x).startswith('<script>window'):
-            html_raw = str(x).removeprefix(
-                '<script>').removesuffix('</script>')
-            break
-
-    if html_raw == '':
-        # TODO: error logic
-        pass
-
-    # TODO: clean up this explanation
-    # EXPLANATION
-    # - regex split finds assignments for the window object's keys
-    # - the second instance of this contains the data we want
-    # - remove the residual JS semicolons
-    # - load in the cleaned string as json
-    # TODO: maybe have a try except block here to handle all the possible
-    #       errors in this sqeuence
-    json_raw = json.loads(
-        re.split(r"window\[.*?\]=", html_raw)[2].replace(';', ''))
-
-    return json_raw
-
-
-async def get_raw_game_json(session: aiohttp.ClientSession,
-                            gid: int | str) -> dict[str, Any]:
-    '''Get the raw json from the game page.'''
-    # TODO: error logic
-    url = GAME_API_TEMPLATE.format(gid)
-    resp = asyncio.run(_get_resp(session, url))
-    return await resp.json()
-
-
-async def get_raw_standings_json(session: aiohttp.ClientSession,
-                                 season: int | str) -> dict[str, Any]:
-    '''Get the raw json from the standings page for a season.'''
-    # TODO: parameter validation
-    url = STANDINGS_TEMPLATE.format(season)
-
-    return asyncio.run(_extract_json(session, url))
-
-
-async def get_raw_schedule_json(session: aiohttp.ClientSession,
-                                date: str) -> dict[str, Any]:
-    # TODO: accept date as string or dt.date
-    '''
-    Get the raw json from the schedule page for a given date.
-    The date MUST be formatted as YYYYMMDD.
-    '''
-    # TODO: parameter validation
-    url = SCHEDULE_TEMPLATE.format(date)
-
-    return asyncio.run(_extract_json(session, url))
-
-
-class AsyncScrapeClient:
+class Client:
     '''Provides an interface for async scraping.'''
 
     DEFAULT_TIMEOUT = 30
@@ -123,10 +37,10 @@ class AsyncScrapeClient:
     def __init__(self):
         self._session = None
 
-    async def __aenter__(self) -> AsyncScrapeClient:
+    async def __aenter__(self) -> Client:
         if self._session is None:
             self._session = aiohttp.ClientSession(
-                headers=AsyncScrapeClient.DEFAULT_HEADERS,
+                headers=Client.DEFAULT_HEADERS,
                 # TODO: error logic
                 raise_for_status=False
             )
@@ -137,3 +51,87 @@ class AsyncScrapeClient:
         if self._session:
             await self._session.close()
             self._session = None
+
+    def check_session_exists(self) -> None:
+        '''Asserts whether the session has been initialized.'''
+        if self._session is None:
+            raise RuntimeError(
+                'Client session not initialized. Use `async with`.')
+
+    async def _get_resp(self, url: str) -> aiohttp.ClientResponse:
+        # TODO: look into caching this with staleness checks
+        # For now, this will not cache anything and will always go out
+        # to fetch new information. This should be somewhat okay assuming
+        # intelligent usage (i.e., not re-fetching standings and schedule
+        # for existing seasons).
+        '''Get the raw json from the API.'''
+        self.check_session_exists()
+
+        # TODO: retry handling
+        logger.debug('fetching from %s...', url)
+        get_start = time.perf_counter()
+        async with self._session.get(url) as resp:  # type: ignore
+            # TODO: error handling
+            get_end = time.perf_counter() - get_start
+            logger.debug('got %d (%.2fs)', resp.status, get_end)
+            if resp.status != 200:
+                pass
+
+        return resp
+
+    async def _extract_json(self, url: str) -> dict[str, Any]:
+        '''Extract json data from HTML.'''
+        # TODO: error logic
+        self.check_session_exists()
+
+        async with self._session.get(url) as resp:  # type: ignore
+            text = await resp.text(encoding='utf-8')
+        soup = BeautifulSoup(text, 'html.parser')
+        html_raw = ''
+        for x in soup.find_all('script'):
+            if str(x).startswith('<script>window'):
+                html_raw = str(x).removeprefix(
+                    '<script>').removesuffix('</script>')
+                break
+
+        if html_raw == '':
+            # TODO: error logic
+            pass
+
+        # TODO: clean up this explanation
+        # EXPLANATION
+        # - regex split finds assignments for the window object's keys
+        # - the second instance of this contains the data we want
+        # - remove the residual JS semicolons
+        # - load in the cleaned string as json
+        # TODO: maybe have a try except block here to handle all the possible
+        #       errors in this sqeuence
+        json_raw = json.loads(
+            re.split(r"window\[.*?\]=", html_raw)[2].replace(';', ''))
+
+        return json_raw
+
+    async def get_raw_game_json(self, gid: int | str) -> dict[str, Any]:
+        '''Get the raw json from the game page.'''
+        # TODO: error logic
+        url = GAME_API_TEMPLATE.format(gid)
+        resp = asyncio.run(self._get_resp(url))
+        return await resp.json()
+
+    async def get_raw_standings_json(self, season: int | str) -> dict[str, Any]:
+        '''Get the raw json from the standings page for a season.'''
+        # TODO: parameter validation
+        url = STANDINGS_TEMPLATE.format(season)
+
+        return await self._extract_json(url)
+
+    async def get_raw_schedule_json(self, date: str) -> dict[str, Any]:
+        # TODO: accept date as string or dt.date
+        '''
+        Get the raw json from the schedule page for a given date.
+        The date MUST be formatted as YYYYMMDD.
+        '''
+        # TODO: parameter validation
+        url = SCHEDULE_TEMPLATE.format(date)
+
+        return await self._extract_json(url)
