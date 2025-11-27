@@ -2,22 +2,95 @@
 This module provides functions for transforming raw data
 from ESPN into pl.DataFrames.
 '''
+import asyncio
+import datetime as dt
+import logging
+
 from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
 import polars as pl
 import polars.selectors as cs
 
-from cbb.etl.scrape import Scraper
+from cbb.etl.scrape import (
+    get_raw_game_json,
+    get_raw_schedule_json,
+    get_raw_standings_json
+)
+
+from cbb.etl.async_scrape import Client
 
 geocoder = Nominatim(user_agent='cbb')
 tf = TimezoneFinder(in_memory=True)
+logger = logging.getLogger(__name__)
+
+DEFAULT_SEASON_START = dt.date(dt.date.today().year, 7, 1)
+CALENDAR_DT_FORMAT = '%Y-%m-%dT%H:%MZ'
+# TODO: figure out what the hell this is
+SEMAPHORE = asyncio.semaphore(50)
 
 
-def get_plays(scraper: Scraper,
-              gid: int | str) -> pl.DataFrame:
-    '''Get the plays from the raw json and perform cleaning and transformation.'''
+def _get_rep_dates(start: str,
+                   end: str):
+    '''
+    Get the necessary dates to fetch between start and end.
+    Assumes start and end are formatted like CALENDAR_DT_FORMAT.
+    '''
+    start = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
+    end = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
+    duration = (end - start).days
+    calendar = [
+        (start + dt.timedelta(days=d)).strftime(CALENDAR_DT_FORMAT)
+        for d in range(duration)
+    ]
+    # minimize pages to search by accessing schedules from
+    # adjacent dates
+    rep_dates = [
+        date
+        for i, date in enumerate(calendar)
+        if i % 3 == 1 or i == len(calendar) - 1
+    ]
+
+    return rep_dates
+
+
+async def extract_from_schedule(season: int) -> pl.DataFrame:
+    '''
+    Extract data from the schedules for the given season.
+    Populates Games, Venues, Statuses.
+    '''
+    # TODO: parameter validation
+    # use one sync request to get calendar
+    season_start = DEFAULT_SEASON_START.replace(year=season).strftime('%Y%m%d')
+    init_schedule = get_raw_schedule_json(season_start)
+    # the calendar field for some reason doesn't get every date
+    # so instead, we manually generate all dates from start to end
+    season = init_schedule['page']['content']['season']
+    rep_dates = _get_rep_dates(season['startDate'], season['endDate'])
+
+    client = Client()
+    async with client:
+        tasks = [
+            client.get_raw_schedule_json(date)
+            for date in rep_dates
+        ]
+        results = await asyncio.run(*tasks)
+
+    results = [
+        res['page']['content']['events']
+        for res in results
+    ]
+
+    # TODO: not yet implemented
+    return pl.DataFrame()
+
+
+def get_plays(gid: int | str) -> pl.DataFrame:
+    # TODO: maybe just create a config that defines the default league
+    '''
+    Get the plays from the raw json and perform cleaning and transformation.
+    '''
     # TODO: error logic
-    plays_raw = scraper.get_raw_game_json(gid)['plays']
+    plays_raw = get_raw_game_json(gid)['plays']
     plays = (
         pl.from_dicts(plays_raw)
         .unnest(
