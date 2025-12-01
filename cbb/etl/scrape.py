@@ -3,7 +3,7 @@ This module provides functions for scraping data from ESPN.
 '''
 from __future__ import annotations
 
-from functools import singledispatchmethod
+from functools import singledispatch
 from typing import Any
 import asyncio
 import datetime as dt
@@ -13,17 +13,22 @@ import re
 import time
 
 from bs4 import BeautifulSoup
+import aiohttp
 import requests
 
 logger = logging.getLogger(__name__)
 
 # FUTURE: implement switching to women's, perhaps with a module manager
-GAME_API_TEMPLATE = (
-    'https://site.web.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/'
-    'summary?region=us&lang=en&contentorigin=espn&event={}'
+API_PREFIX = (
+    'https://site.web.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball'
 )
-STANDINGS_TEMPLATE = 'https://www.espn.com/mens-college-basketball/standings/_/season/{}'
-SCHEDULE_TEMPLATE = 'https://www.espn.com/mens-college-basketball/schedule/_/date/{}'
+GAME_API_TEMPLATE = (
+    f'{API_PREFIX}/summary?region=us&lang=en&contentorigin=espn&event={{}}'
+)
+CONFERENCES_API_URL = f'{API_PREFIX}/scoreboard/conferences?groups=50'
+WEB_PREFIX = 'https://www.espn.com/mens-college-basketball'
+STANDINGS_TEMPLATE = f'{WEB_PREFIX}/standings/_/season/{{}}'
+SCHEDULE_TEMPLATE = f'{WEB_PREFIX}/schedule/_/date/{{}}'
 
 # request parameters
 DEFAULT_TIMEOUT = 30
@@ -59,11 +64,8 @@ def _get_resp(url: str,
     return resp
 
 
-def _extract_json(url: str) -> dict[str, Any]:
-    '''Extract json data from HTML.'''
-    # TODO: error logic
-    resp = _get_resp(url)
-    soup = BeautifulSoup(resp.text, 'html.parser')
+def _extract_json(text: str) -> dict[str, Any]:
+    soup = BeautifulSoup(text, 'html.parser')
     html_raw = ''
     for x in soup.find_all('script'):
         if str(x).startswith('<script>window'):
@@ -89,31 +91,58 @@ def _extract_json(url: str) -> dict[str, Any]:
     return json_raw
 
 
+def _extract_json_from_url(url: str) -> dict[str, Any]:
+    '''Extract json data from HTML.'''
+    # TODO: error logic
+    resp = _get_resp(url)
+    return _extract_json(resp.text)
+
+
+def get_game_url(gid: int | str) -> str:
+    '''Get the url for the given gid.'''
+    return GAME_API_TEMPLATE.format(gid)
+
+
+def get_standings_url(season: int | str) -> str:
+    '''Get the url for the given season's standings.'''
+    return STANDINGS_TEMPLATE.format(season)
+
+
+@singledispatch
+def get_schedule_url(date: str):
+    '''Get the url for the given date's schedule.'''
+    return SCHEDULE_TEMPLATE.format(date)
+
+
+@get_schedule_url.register
+def _(date: dt.date):
+    date_str = date.strftime(SCHEDULE_DATE_FORMAT)
+    return get_schedule_url(date_str)
+
+
 def get_raw_game_json(gid: int | str) -> dict[str, Any]:
     '''Get the raw json from the game page.'''
     # TODO: error logic
-    url = GAME_API_TEMPLATE.format(gid)
+    url = get_game_url(gid)
     return _get_resp(url).json()
 
 
 def get_raw_standings_json(season: int | str) -> dict[str, Any]:
     '''Get the raw json from the standings page for a season.'''
     # TODO: parameter validation
-    url = STANDINGS_TEMPLATE.format(season)
+    url = get_standings_url(season)
+    return _extract_json_from_url(url)
 
-    return _extract_json(url)
 
-
-def get_raw_schedule_json(date: str) -> dict[str, Any]:
+def get_raw_schedule_json(date: str | dt.date) -> dict[str, Any]:
     # TODO: accept date as string or dt.date
     '''
     Get the raw json from the schedule page for a given date.
     The date MUST be formatted as YYYYMMDD.
     '''
     # TODO: parameter validation
-    url = SCHEDULE_TEMPLATE.format(date)
-
-    return _extract_json(url)
+    url = get_schedule_url(date)
+    return _extract_json_from_url(url)
 
 
 class AsyncClient:
@@ -171,58 +200,27 @@ class AsyncClient:
         # TODO: error logic
         async with self._session.get(url) as resp:  # type: ignore
             text = await resp.text(encoding='utf-8')
-        soup = BeautifulSoup(text, 'html.parser')
-        html_raw = ''
-        for x in soup.find_all('script'):
-            if str(x).startswith('<script>window'):
-                html_raw = str(x).removeprefix(
-                    '<script>').removesuffix('</script>')
-                break
 
-        if html_raw == '':
-            # TODO: error logic
-            pass
-
-        # TODO: clean up this explanation
-        # EXPLANATION
-        # - regex split finds assignments for the window object's keys
-        # - the second instance of this contains the data we want
-        # - remove the residual JS semicolons
-        # - load in the cleaned string as json
-        # TODO: maybe have a try except block here to handle all the possible
-        #       errors in this sqeuence
-        json_raw = json.loads(
-            re.split(r"window\[.*?\]=", html_raw)[2].replace(';', ''))
-
-        return json_raw
+        return _extract_json(text)
 
     async def get_raw_game_json(self, gid: int | str) -> dict[str, Any]:
         '''Get the raw json from the game page.'''
         # TODO: error logic
-        url = GAME_API_TEMPLATE.format(gid)
+        url = get_game_url(gid)
         resp = asyncio.run(self._get_resp(url))
         return await resp.json()
 
     async def get_raw_standings_json(self, season: int | str) -> dict[str, Any]:
         '''Get the raw json from the standings page for a season.'''
         # TODO: parameter validation
-        url = STANDINGS_TEMPLATE.format(season)
-
+        url = get_standings_url(season)
         return await self._extract_json(url)
 
-    @singledispatchmethod
     async def get_raw_schedule_json(self, date: str | dt.date) -> dict[str, Any]:
         '''
         Get the raw json from the schedule page for a given date.
         The date MUST be formatted as SCHEDULE_DATE_FORMAT.
         '''
         # TODO: parameter validation
-        url = SCHEDULE_TEMPLATE.format(date)
-
+        url = get_schedule_url(date)
         return await self._extract_json(url)
-
-    @get_raw_schedule_json.register
-    async def _(self, date: dt.date) -> dict[str, Any]:
-        date_str = date.strftime(SCHEDULE_DATE_FORMAT)
-
-        return await get_raw_schedule_json(date_str)
