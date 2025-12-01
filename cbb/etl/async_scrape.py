@@ -3,8 +3,10 @@ This module provides functions for scraping data from ESPN.
 '''
 from __future__ import annotations
 
+from functools import singledispatchmethod
 from typing import Any
 import asyncio
+import datetime as dt
 import json
 import logging
 import re
@@ -22,8 +24,10 @@ GAME_API_TEMPLATE = (
 )
 STANDINGS_TEMPLATE = 'https://www.espn.com/mens-college-basketball/standings/_/season/{}'
 SCHEDULE_TEMPLATE = 'https://www.espn.com/mens-college-basketball/schedule/_/date/{}'
+SCHEDULE_DATE_FORMAT = '%Y%m%d'
 
 
+# TODO: look at merging this logic back with scrape.py using an interface
 class Client:
     '''Provides an interface for async scraping.'''
 
@@ -81,9 +85,9 @@ class Client:
 
     async def _extract_json(self, url: str) -> dict[str, Any]:
         '''Extract json data from HTML.'''
-        # TODO: error logic
         self.check_session_exists()
 
+        # TODO: error logic
         async with self._session.get(url) as resp:  # type: ignore
             text = await resp.text(encoding='utf-8')
         soup = BeautifulSoup(text, 'html.parser')
@@ -125,13 +129,19 @@ class Client:
 
         return await self._extract_json(url)
 
-    async def get_raw_schedule_json(self, date: str) -> dict[str, Any]:
-        # TODO: accept date as string or dt.date
+    @singledispatchmethod
+    async def get_raw_schedule_json(self, date: str | dt.date) -> dict[str, Any]:
         '''
         Get the raw json from the schedule page for a given date.
-        The date MUST be formatted as YYYYMMDD.
+        The date MUST be formatted as SCHEDULE_DATE_FORMAT.
         '''
         # TODO: parameter validation
         url = SCHEDULE_TEMPLATE.format(date)
 
         return await self._extract_json(url)
+
+    @get_raw_schedule_json.register
+    async def _(self, date: dt.date) -> dict[str, Any]:
+        date_str = date.strftime(SCHEDULE_DATE_FORMAT)
+
+        return await get_raw_schedule_json(date_str)
