@@ -28,7 +28,7 @@ SCHEDULE_DATE_FORMAT = '%Y%m%d'
 
 
 # TODO: look at merging this logic back with scrape.py using an interface
-class Client:
+class AsyncClient:
     '''Provides an interface for async scraping.'''
 
     DEFAULT_TIMEOUT = 30
@@ -41,10 +41,10 @@ class Client:
     def __init__(self):
         self._session = None
 
-    async def __aenter__(self) -> Client:
+    async def __aenter__(self) -> AsyncClient:
         if self._session is None:
             self._session = aiohttp.ClientSession(
-                headers=Client.DEFAULT_HEADERS,
+                headers=AsyncClient.DEFAULT_HEADERS,
                 # TODO: error logic
                 raise_for_status=False
             )
