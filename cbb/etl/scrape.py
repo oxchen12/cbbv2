@@ -3,7 +3,10 @@ This module provides functions for scraping data from ESPN.
 '''
 from __future__ import annotations
 
+from functools import singledispatchmethod
 from typing import Any
+import asyncio
+import datetime as dt
 import json
 import logging
 import re
@@ -111,3 +114,115 @@ def get_raw_schedule_json(date: str) -> dict[str, Any]:
     url = SCHEDULE_TEMPLATE.format(date)
 
     return _extract_json(url)
+
+
+class AsyncClient:
+    '''Provides an interface for async scraping.'''
+
+    def __init__(self):
+        self._session = None
+
+    async def __aenter__(self) -> AsyncClient:
+        if self._session is None:
+            self._session = aiohttp.ClientSession(
+                headers=DEFAULT_HEADERS,
+                # TODO: error logic
+                raise_for_status=False
+            )
+
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    def check_session_exists(self) -> None:
+        '''Asserts whether the session has been initialized.'''
+        if self._session is None:
+            raise RuntimeError(
+                'Client session not initialized. Use `async with`.')
+
+    async def _get_resp(self, url: str) -> aiohttp.ClientResponse:
+        # TODO: look into caching this with staleness checks
+        # For now, this will not cache anything and will always go out
+        # to fetch new information. This should be somewhat okay assuming
+        # intelligent usage (i.e., not re-fetching standings and schedule
+        # for existing seasons).
+        '''Get the raw json from the API.'''
+        self.check_session_exists()
+
+        # TODO: retry handling
+        logger.debug('fetching from %s...', url)
+        get_start = time.perf_counter()
+        async with self._session.get(url) as resp:  # type: ignore
+            # TODO: error handling
+            get_end = time.perf_counter() - get_start
+            logger.debug('got %d (%.2fs)', resp.status, get_end)
+            if resp.status != 200:
+                pass
+
+        return resp
+
+    async def _extract_json(self, url: str) -> dict[str, Any]:
+        '''Extract json data from HTML.'''
+        self.check_session_exists()
+
+        # TODO: error logic
+        async with self._session.get(url) as resp:  # type: ignore
+            text = await resp.text(encoding='utf-8')
+        soup = BeautifulSoup(text, 'html.parser')
+        html_raw = ''
+        for x in soup.find_all('script'):
+            if str(x).startswith('<script>window'):
+                html_raw = str(x).removeprefix(
+                    '<script>').removesuffix('</script>')
+                break
+
+        if html_raw == '':
+            # TODO: error logic
+            pass
+
+        # TODO: clean up this explanation
+        # EXPLANATION
+        # - regex split finds assignments for the window object's keys
+        # - the second instance of this contains the data we want
+        # - remove the residual JS semicolons
+        # - load in the cleaned string as json
+        # TODO: maybe have a try except block here to handle all the possible
+        #       errors in this sqeuence
+        json_raw = json.loads(
+            re.split(r"window\[.*?\]=", html_raw)[2].replace(';', ''))
+
+        return json_raw
+
+    async def get_raw_game_json(self, gid: int | str) -> dict[str, Any]:
+        '''Get the raw json from the game page.'''
+        # TODO: error logic
+        url = GAME_API_TEMPLATE.format(gid)
+        resp = asyncio.run(self._get_resp(url))
+        return await resp.json()
+
+    async def get_raw_standings_json(self, season: int | str) -> dict[str, Any]:
+        '''Get the raw json from the standings page for a season.'''
+        # TODO: parameter validation
+        url = STANDINGS_TEMPLATE.format(season)
+
+        return await self._extract_json(url)
+
+    @singledispatchmethod
+    async def get_raw_schedule_json(self, date: str | dt.date) -> dict[str, Any]:
+        '''
+        Get the raw json from the schedule page for a given date.
+        The date MUST be formatted as SCHEDULE_DATE_FORMAT.
+        '''
+        # TODO: parameter validation
+        url = SCHEDULE_TEMPLATE.format(date)
+
+        return await self._extract_json(url)
+
+    @get_raw_schedule_json.register
+    async def _(self, date: dt.date) -> dict[str, Any]:
+        date_str = date.strftime(SCHEDULE_DATE_FORMAT)
+
+        return await get_raw_schedule_json(date_str)
