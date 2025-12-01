@@ -14,13 +14,10 @@ import polars.selectors as cs
 from cbb.etl.scrape import (
     get_raw_game_json,
     get_raw_schedule_json,
-    get_raw_standings_json
+    get_raw_standings_json,
+    AsyncClient
 )
 
-from cbb.etl.async_scrape import Client
-
-geocoder = Nominatim(user_agent='cbb')
-tf = TimezoneFinder(in_memory=True)
 logger = logging.getLogger(__name__)
 
 DEFAULT_SEASON_START = dt.date(dt.date.today().year, 7, 1)
@@ -71,27 +68,27 @@ async def transform_from_schedule(season: int) -> pl.DataFrame:
     season = init_schedule['page']['content']['season']
     rep_dates = _get_rep_dates(season['startDate'], season['endDate'])
 
-    client = Client()
+    client = AsyncClient()
     async with client:
         tasks = [
             client.get_raw_schedule_json(date)
             for date in rep_dates
         ]
-        results = await asyncio.run(*tasks)
+        schedule_results = await asyncio.run(*tasks)
 
-    schedule = [
+    schedule_json = [
         {
             k: v
             for k, v in event.items()
             if k in SCHEDULE_KEEP
         }
-        for res in results
+        for res in schedule_results
         for date in res['page']['content']['events'].values()
         for event in date
     ]
 
     games_inter = (
-        pl.from_dicts(schedule)
+        pl.from_dicts(schedule_json)
         .lazy()
         .with_columns(
             pl.col('id').cast(pl.Int64),
@@ -163,6 +160,63 @@ async def transform_from_standings(season: int) -> pl.DataFrame:
     Extract data from the schedules for the given season.
     Populates Teams, Conferences, ConferenceAlignments.
     '''
+    client = AsyncClient()
+    async with client:
+        standings_json_raw = await client.get_raw_standings_json(season)
+        standings_json = standings_json_raw['page']['content']
+
+    conferences = (
+        pl.from_dicts(standings_json['headerscoreboard']['collegeConfs'])
+        .filter(pl.col('name').ne('NCAA Division I'))
+        .select(
+            pl.col('groupId').cast(pl.Int64).alias('cid'),
+            'name',
+            pl.col('shortName').alias('abbrev')
+        )
+    )
+    # TODO: insert into Conferences
+
+    teams_confs = (
+        pl.from_dicts(standings_json['standings']['groups']['groups'])
+        .lazy()
+        .select(
+            pl.col('name').alias('confName'),
+            'standings'
+        )
+        .explode('standings')
+        .unnest('standings')
+        .unnest('team')
+        .join(
+            conferences.select('cid', 'name'),
+            left_on='confName',
+            right_on='name'
+        )
+        .select(
+            'cid',
+            pl.col('id').alias('tid').cast(pl.Int64),
+            pl.col('displayName').alias('name'),
+            'location',
+            pl.col('shortDisplayName').alias('mascot'),
+            'abbrev'
+        )
+    )
+
+    teams = (
+        teams_confs
+        .select(pl.exclude('cid'))
+        .collect()
+    )
+    # TODO: insert into Teams
+
+    conference_alignments = (
+        teams_confs
+        .select(
+            'cid', 'tid',
+            pl.lit(season).alias('season')
+        )
+        .collect()
+    )
+    # TODO: insert into ConferenceAlignments
 
     # TODO: not yet implemented
     return pl.DataFrame()
@@ -174,9 +228,9 @@ async def transform_from_game(gid: int) -> pl.DataFrame:
     Populates Teams, Plays, PlayTypes, Players.
     Updates Games.
     '''
-    client = Client()
+    client = AsyncClient()
     async with client:
-        game = await client.get_raw_game_json(gid)
+        game_json_raw = await client.get_raw_game_json(gid)
 
     # TODO: not yet implemented
     return pl.DataFrame()
