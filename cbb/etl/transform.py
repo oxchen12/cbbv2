@@ -19,32 +19,32 @@ from .scrape import (
 )
 
 from .date import (
-    get_season
+    get_season,
+    validate_season,
+    DEFAULT_SEASON_START
 )
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SEASON_START = dt.date(dt.date.today().year, 7, 1)
 CALENDAR_DT_FORMAT = '%Y-%m-%dT%H:%MZ'
 SCHEDULE_KEEP = (
     'id', 'teams', 'date',
     'tbd', 'status', 'venue'
 )
-# TODO: figure out what the hell this is
-SEMAPHORE = asyncio.Semaphore(50)
 
 
 def _get_rep_dates(start: str,
-                   end: str):
+                   end: str) -> list[dt.date]:
     '''
     Get the necessary dates to fetch between start and end.
     Assumes start and end are formatted like CALENDAR_DT_FORMAT.
     '''
     start = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
+    start = max(start, DEFAULT_SEASON_START)
     end = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
     duration = (end - start).days
     calendar = [
-        (start + dt.timedelta(days=d)).strftime(CALENDAR_DT_FORMAT)
+        start + dt.timedelta(days=d)
         for d in range(duration)
     ]
     # minimize pages to search by accessing schedules from
@@ -58,21 +58,23 @@ def _get_rep_dates(start: str,
     return rep_dates
 
 
-async def transform_from_schedule(client: AsyncClient, season: int) -> pl.DataFrame:
+async def transform_from_schedule(client: AsyncClient,
+                                  season: int) -> pl.DataFrame:
     '''
     Extract data from the schedules for the given season.
     Populates Games, Venues, Statuses.
     '''
-    # TODO: parameter validation
+    validate_season(season)
+
     # use one sync request to get calendar
-    season_start = DEFAULT_SEASON_START.replace(year=season).strftime('%Y%m%d')
+    season_start = DEFAULT_SEASON_START.replace(year=season)
     init_schedule = get_raw_schedule_json(season_start)
     # the calendar field for some reason doesn't get every date
     # so instead, we manually generate all dates from start to end
     season = init_schedule['page']['content']['season']
     rep_dates = _get_rep_dates(season['startDate'], season['endDate'])
+    logging.debug(rep_dates)
 
-    # client = AsyncClient()
     async with client:
         tasks = [
             client.get_raw_schedule_json(date)
@@ -160,12 +162,14 @@ async def transform_from_schedule(client: AsyncClient, season: int) -> pl.DataFr
     return games
 
 
-async def transform_from_standings(client: AsyncClient, season: int) -> pl.DataFrame:
+async def transform_from_standings(client: AsyncClient,
+                                   season: int) -> pl.DataFrame:
     '''
     Extract data from the schedules for the given season.
     Populates Teams, Conferences, ConferenceAlignments.
     '''
-    # client = AsyncClient()
+    validate_season(season)
+
     async with client:
         standings_json_raw = await client.get_raw_standings_json(season)
     standings_content = standings_json_raw['page']['content']
@@ -266,7 +270,6 @@ async def transform_from_game(client: AsyncClient, gid: int) -> pl.DataFrame:
     Populates Plays, PlayTypes, Players, PlayerSeasons.
     Updates Teams, Games.
     '''
-    # client = AsyncClient()
     async with client:
         game_json_raw = await client.get_raw_game_json(gid)
     attendance = game_json_raw['gameInfo']['attendance']

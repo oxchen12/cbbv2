@@ -16,7 +16,10 @@ from bs4 import BeautifulSoup
 import aiohttp
 import requests
 
-from .date import get_season
+from .date import (
+    get_season,
+    validate_season
+)
 
 logger = logging.getLogger(__name__)
 T = TypeVar('T')
@@ -42,8 +45,6 @@ DEFAULT_HEADERS = {
 }
 
 # dates
-MIN_SEASON = 2003
-MAX_SEASON = get_season(dt.date.today())
 SCHEDULE_DATE_FORMAT = '%Y%m%d'
 
 
@@ -103,9 +104,7 @@ def _validate_season(season: int | str):
     except ValueError:
         raise ValueError(f'season must be integer-like (got {season})')
 
-    if not MIN_SEASON <= season <= MAX_SEASON:
-        raise ValueError(
-            f'season must be between {MIN_SEASON} and {MAX_SEASON}')
+    validate_season(season)
 
 
 def _validate_schedule_date(date: str | dt.date):
@@ -203,9 +202,14 @@ class AsyncClient:
         response using the `processor`.
         '''
         self.check_session_exists()
+        short_url = (
+            url
+            .removeprefix(API_PREFIX)
+            .removeprefix(WEB_PREFIX)
+        )
 
         # TODO: retry handling
-        logger.debug('fetching from %s...', url)
+        logger.debug('fetching from %s...', short_url)
         get_start = time.perf_counter()
         async with (
             self._semaphore,
@@ -213,7 +217,8 @@ class AsyncClient:
         ):
             # TODO: error handling
             get_end = time.perf_counter() - get_start
-            logger.debug('got %d (%.2fs)', resp.status, get_end)
+            logger.debug('got %d (%.2fs) from %s',
+                         resp.status, get_end, short_url)
             if resp.status != 200:
                 pass
 
