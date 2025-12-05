@@ -75,8 +75,8 @@ def _extract_json(text: str) -> dict[str, Any]:
             break
 
     if html_raw == '':
-        # TODO: error logic
-        print('empty html')
+        logger.debug('no script tags found, continuing')
+        return {}
 
     # TODO: clean up this explanation
     # EXPLANATION
@@ -84,9 +84,10 @@ def _extract_json(text: str) -> dict[str, Any]:
     # - the third instance of this contains the data we want
     # - remove the residual JS semicolons
     # - load in the cleaned string as json
-    # TODO: maybe have a try except block here to handle all the possible
-    #       errors in this sequence
     matches = re.split(r'window\[.*?\]=', html_raw)
+    if len(matches) < 3:
+        logging.debug('no json data found, continuing')
+        return {}
     data_match = matches[2].replace(';', '')
     json_raw = json.loads(data_match)
 
