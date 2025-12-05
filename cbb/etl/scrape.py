@@ -4,7 +4,7 @@ This module provides functions for scraping data from ESPN.
 from __future__ import annotations
 
 from functools import singledispatch
-from typing import Any
+from typing import Any, TypeVar, Callable, Awaitable
 import asyncio
 import datetime as dt
 import json
@@ -17,6 +17,7 @@ import aiohttp
 import requests
 
 logger = logging.getLogger(__name__)
+T = TypeVar('T')
 
 # FUTURE: implement switching to women's, perhaps with a module manager
 API_PREFIX = (
@@ -35,7 +36,7 @@ DEFAULT_TIMEOUT = 30
 DEFAULT_HEADERS = {
     # TODO: I think this is generic enough that there isn't a security risk
     #       but I should make sure
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    'User-Agent': 'Mozilla/5.0'
 }
 
 
@@ -75,18 +76,19 @@ def _extract_json(text: str) -> dict[str, Any]:
 
     if html_raw == '':
         # TODO: error logic
-        pass
+        print('empty html')
 
     # TODO: clean up this explanation
     # EXPLANATION
     # - regex split finds assignments for the window object's keys
-    # - the second instance of this contains the data we want
+    # - the third instance of this contains the data we want
     # - remove the residual JS semicolons
     # - load in the cleaned string as json
     # TODO: maybe have a try except block here to handle all the possible
-    #       errors in this sqeuence
-    json_raw = json.loads(
-        re.split(r"window\[.*?\]=", html_raw)[2].replace(';', ''))
+    #       errors in this sequence
+    matches = re.split(r'window\[.*?\]=', html_raw)
+    data_match = matches[2].replace(';', '')
+    json_raw = json.loads(data_match)
 
     return json_raw
 
@@ -135,7 +137,6 @@ def get_raw_standings_json(season: int | str) -> dict[str, Any]:
 
 
 def get_raw_schedule_json(date: str | dt.date) -> dict[str, Any]:
-    # TODO: accept date as string or dt.date
     '''
     Get the raw json from the schedule page for a given date.
     The date MUST be formatted as YYYYMMDD.
@@ -148,7 +149,10 @@ def get_raw_schedule_json(date: str | dt.date) -> dict[str, Any]:
 class AsyncClient:
     '''Provides an interface for async scraping.'''
 
+    MAX_CONCURRENTS = 10
+
     def __init__(self):
+        self._semaphore = asyncio.Semaphore(AsyncClient.MAX_CONCURRENTS)
         self._session = None
 
     async def __aenter__(self) -> AsyncClient:
@@ -172,49 +176,57 @@ class AsyncClient:
             raise RuntimeError(
                 'Client session not initialized. Use `async with`.')
 
-    async def _get_resp(self, url: str) -> aiohttp.ClientResponse:
-        # TODO: look into caching this with staleness checks
-        # For now, this will not cache anything and will always go out
-        # to fetch new information. This should be somewhat okay assuming
-        # intelligent usage (i.e., not re-fetching standings and schedule
-        # for existing seasons).
-        '''Get the raw json from the API.'''
+    async def _fetch(
+        self,
+        url: str,
+        processor: Callable[[aiohttp.ClientResponse], Awaitable[T]]
+    ) -> T:
+        '''
+        Get a request from the url and process the
+        response using the `processor`.
+        '''
         self.check_session_exists()
 
         # TODO: retry handling
         logger.debug('fetching from %s...', url)
         get_start = time.perf_counter()
-        async with self._session.get(url) as resp:  # type: ignore
+        async with (
+            self._semaphore,
+            self._session.get(url) as resp
+        ):
             # TODO: error handling
             get_end = time.perf_counter() - get_start
             logger.debug('got %d (%.2fs)', resp.status, get_end)
             if resp.status != 200:
                 pass
 
-        return resp
+            return await processor(resp)
 
-    async def _extract_json(self, url: str) -> dict[str, Any]:
-        '''Extract json data from HTML.'''
-        self.check_session_exists()
-
-        # TODO: error logic
-        async with self._session.get(url) as resp:  # type: ignore
+    async def _extract_json_from_html(self, url: str) -> dict[str, Any]:
+        '''Extract json from HTML page.'''
+        async def process_json_from_html(resp: aiohttp.ClientResponse) -> dict[str, Any]:
             text = await resp.text(encoding='utf-8')
+            return _extract_json(text)
 
-        return _extract_json(text)
+        return await self._fetch(url, process_json_from_html)
+
+    async def _extract_as_json(self, url: str) -> dict[str, Any]:
+        '''Extract json from json page.'''
+        async def process_json(resp: aiohttp.ClientResponse) -> dict[str, Any]:
+            return await resp.json()
+
+        return await self._fetch(url, process_json)
 
     async def get_raw_game_json(self, gid: int | str) -> dict[str, Any]:
         '''Get the raw json from the game page.'''
-        # TODO: error logic
         url = get_game_url(gid)
-        resp = asyncio.run(self._get_resp(url))
-        return await resp.json()
+        return await self._extract_as_json(url)
 
     async def get_raw_standings_json(self, season: int | str) -> dict[str, Any]:
         '''Get the raw json from the standings page for a season.'''
         # TODO: parameter validation
         url = get_standings_url(season)
-        return await self._extract_json(url)
+        return await self._extract_json_from_html(url)
 
     async def get_raw_schedule_json(self, date: str | dt.date) -> dict[str, Any]:
         '''
@@ -223,4 +235,4 @@ class AsyncClient:
         '''
         # TODO: parameter validation
         url = get_schedule_url(date)
-        return await self._extract_json(url)
+        return await self._extract_json_from_html(url)
