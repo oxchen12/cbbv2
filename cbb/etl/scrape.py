@@ -39,14 +39,14 @@ DEFAULT_HEADERS = {
     'User-Agent': 'Mozilla/5.0'
 }
 
+# dates
+MIN_SEASON = 2003
+MAX_SEASON = get_season(dt.date.today())
+SCHEDULE_DATE_FORMAT = '%Y%m%d'
+
 
 def _get_resp(url: str,
               timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
-    # TODO: look into caching this with staleness checks
-    # For now, this will not cache anything and will always go out
-    # to fetch new information. This should be somewhat okay assuming
-    # intelligent usage (i.e., not re-fetching standings and schedule
-    # for existing seasons).
     '''Get the raw json from the API.'''
     # TODO: retry handling
     logger.debug('fetching from %s...', url)
@@ -78,12 +78,7 @@ def _extract_json(text: str) -> dict[str, Any]:
         logger.debug('no script tags found, continuing')
         return {}
 
-    # TODO: clean up this explanation
-    # EXPLANATION
-    # - regex split finds assignments for the window object's keys
-    # - the third instance of this contains the data we want
-    # - remove the residual JS semicolons
-    # - load in the cleaned string as json
+    # script consists of assignments to properties of `window`
     matches = re.split(r'window\[.*?\]=', html_raw)
     if len(matches) < 3:
         logging.debug('no json data found, continuing')
@@ -96,9 +91,29 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 def _extract_json_from_url(url: str) -> dict[str, Any]:
     '''Extract json data from HTML.'''
-    # TODO: error logic
     resp = _get_resp(url)
     return _extract_json(resp.text)
+
+
+def _validate_season(season: int | str):
+    try:
+        season = int(season)
+    except ValueError:
+        raise ValueError(f'season must be integer-like (got {season})')
+
+    if not MIN_SEASON <= season <= MAX_SEASON:
+        raise ValueError(
+            f'season must be between {MIN_SEASON} and {MAX_SEASON}')
+
+
+def _validate_schedule_date(date: str | dt.date):
+    if isinstance(date, dt.date):
+        return
+    try:
+        date = dt.date.strptime(date, SCHEDULE_DATE_FORMAT)
+    except ValueError:
+        raise ValueError(
+            f'improperly formatted (got {date}, must be like {SCHEDULE_DATE_FORMAT})')
 
 
 def get_game_url(gid: int | str) -> str:
@@ -125,14 +140,13 @@ def _(date: dt.date):
 
 def get_raw_game_json(gid: int | str) -> dict[str, Any]:
     '''Get the raw json from the game page.'''
-    # TODO: error logic
     url = get_game_url(gid)
     return _get_resp(url).json()
 
 
 def get_raw_standings_json(season: int | str) -> dict[str, Any]:
     '''Get the raw json from the standings page for a season.'''
-    # TODO: parameter validation
+    _validate_season(season)
     url = get_standings_url(season)
     return _extract_json_from_url(url)
 
@@ -142,7 +156,7 @@ def get_raw_schedule_json(date: str | dt.date) -> dict[str, Any]:
     Get the raw json from the schedule page for a given date.
     The date MUST be formatted as YYYYMMDD.
     '''
-    # TODO: parameter validation
+    _validate_schedule_date(date)
     url = get_schedule_url(date)
     return _extract_json_from_url(url)
 
@@ -225,15 +239,15 @@ class AsyncClient:
 
     async def get_raw_standings_json(self, season: int | str) -> dict[str, Any]:
         '''Get the raw json from the standings page for a season.'''
-        # TODO: parameter validation
+        _validate_season(season)
         url = get_standings_url(season)
         return await self._extract_json_from_html(url)
 
     async def get_raw_schedule_json(self, date: str | dt.date) -> dict[str, Any]:
         '''
         Get the raw json from the schedule page for a given date.
-        The date MUST be formatted as SCHEDULE_DATE_FORMAT.
+        A date `str` should be formatted as SCHEDULE_DATE_FORMAT.
         '''
-        # TODO: parameter validation
+        _validate_schedule_date(date)
         url = get_schedule_url(date)
         return await self._extract_json_from_html(url)
