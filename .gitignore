@@ -3,3 +3,4 @@ sandbox/
 __pycache__/
 db/
 .env
+*.log
