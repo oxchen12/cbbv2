@@ -11,11 +11,15 @@ from timezonefinder import TimezoneFinder
 import polars as pl
 import polars.selectors as cs
 
-from cbb.etl.scrape import (
+from .scrape import (
     get_raw_game_json,
     get_raw_schedule_json,
     get_raw_standings_json,
     AsyncClient
+)
+
+from .date import (
+    get_season
 )
 
 logger = logging.getLogger(__name__)
@@ -52,10 +56,6 @@ def _get_rep_dates(start: str,
     ]
 
     return rep_dates
-
-
-def _get_season(date: dt.date) -> int:
-    return int(date.month < 7) + date.year
 
 
 async def transform_from_schedule(client: AsyncClient, season: int) -> pl.DataFrame:
@@ -422,7 +422,7 @@ async def transform_from_game(client: AsyncClient, gid: int) -> pl.DataFrame:
     )
     # TODO: insert into Players
 
-    season = _get_season(
+    season = get_season(
         games
         .item(row=0, col='date')
     )

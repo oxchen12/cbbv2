@@ -16,6 +16,8 @@ from bs4 import BeautifulSoup
 import aiohttp
 import requests
 
+from .date import get_season
+
 logger = logging.getLogger(__name__)
 T = TypeVar('T')
 
