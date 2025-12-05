@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS Teams (
     location TEXT NOT NULL,
     mascot TEXT NOT NULL,
     -- not sure
-    abbrev TEXT NOT NULL
+    abbrev TEXT NOT NULL,
+    color VARCHAR(6),
+    alt_color VARCHAR(6)
 );
 
 CREATE TABLE IF NOT EXISTS ConferenceAlignments (
@@ -58,7 +60,8 @@ CREATE TABLE IF NOT EXISTS Plays (
     game_id INTEGER,
     sequence_id INTEGER,
     play_type_id INTEGER NOT NULL,
-    points_attempted INTEGER CHECK (points_attempted <= 3),
+    points_attempted INTEGER NOT NULL CHECK (points_attempted <= 3),
+    is_score BOOLEAN NOT NULL,
     team_id INTEGER,
     player_id INTEGER,
     assist_id INTEGER,
@@ -98,9 +101,23 @@ CREATE TABLE IF NOT EXISTS PlayerSeasons (
     player_id INTEGER,
     team_id INTEGER NOT NULL,
     season INTEGER NOT NULL,
+    jersey INTEGER NOT NULL,
     PRIMARY KEY (player_id, team_id),
     FOREIGN KEY (player_id) REFERENCES Players (id),
     FOREIGN KEY (team_id) REFERENCES Teams (id)
 );
 
+CREATE TABLE IF NOT EXISTS GameLogs (
+    player_id INTEGER,
+    game_id INTEGER,
+    played BOOLEAN NOT NULL,
+    started BOOLEAN NOT NULL,
+    ejected BOOLEAN NOT NULL,
+    -- TODO: should there be stats here
+    PRIMARY KEY (player_id, game_id),
+    FOREIGN KEY (player_id) REFERENCES Players (id),
+    FOREIGN KEY (game_id) REFERENCES Teams (id)
+);
+
 -- FUTURE: AP Top 25 Ranking snapshots
+-- FUTURE: Conference aliases?
