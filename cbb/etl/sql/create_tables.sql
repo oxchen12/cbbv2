@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS PlayerSeasons (
     team_id INTEGER NOT NULL,
     season INTEGER NOT NULL,
     jersey INTEGER NOT NULL,
-    PRIMARY KEY (player_id, team_id),
+    PRIMARY KEY (player_id, team_id, season),
     FOREIGN KEY (player_id) REFERENCES Players (id),
     FOREIGN KEY (team_id) REFERENCES Teams (id)
 );
