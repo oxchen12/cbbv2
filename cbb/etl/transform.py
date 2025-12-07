@@ -2,22 +2,27 @@
 This module provides functions for transforming raw data
 from ESPN into pl.DataFrames.
 '''
+from typing import Any
 import asyncio
 import datetime as dt
 import logging
 
 from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
+from adbc_driver_manager import dbapi
 import polars as pl
 import polars.selectors as cs
 
 from .scrape import (
-    get_raw_game_json,
     get_raw_schedule_json,
-    get_raw_standings_json,
+    get_raw_game_json,
     AsyncClient
 )
-
+from .database import (
+    Table,
+    insert_to_db,
+    inserts_to_db
+)
 from .date import (
     get_season,
     validate_season,
@@ -58,8 +63,11 @@ def _get_rep_dates(start: str,
     return rep_dates
 
 
-async def transform_from_schedule(client: AsyncClient,
-                                  season: int) -> pl.DataFrame:
+async def transform_from_schedule(
+    conn: dbapi.Connection,
+    client: AsyncClient,
+    season: int
+) -> pl.DataFrame:
     '''
     Extract data from the schedules for the given season.
     Populates Games, Venues, Statuses.
@@ -73,7 +81,6 @@ async def transform_from_schedule(client: AsyncClient,
     # so instead, we manually generate all dates from start to end
     season = init_schedule['page']['content']['season']
     rep_dates = _get_rep_dates(season['startDate'], season['endDate'])
-    logging.debug(rep_dates)
 
     async with client:
         tasks = [
@@ -129,7 +136,6 @@ async def transform_from_schedule(client: AsyncClient,
         .unnest('address')
         .collect()
     )
-    # TODO: insert into Venues
 
     game_statuses = (
         games_inter
@@ -144,7 +150,6 @@ async def transform_from_schedule(client: AsyncClient,
         .sort('id')
         .collect()
     )
-    # TODO: insert into GameStatuses
 
     games = (
         games_inter
@@ -156,14 +161,29 @@ async def transform_from_schedule(client: AsyncClient,
         .sort('datetime')
         .collect()
     )
-    # TODO: insert into Games
 
-    # TODO: not yet implemented
-    return games
+    logger.debug('Tabulation completed. Inserting to DB...')
+
+    # TODO: see if there's a way for me to do these concurrently
+    rows = inserts_to_db(
+        items=[
+            (venues, Table.VENUES, 'nothing'),
+            (game_statuses, Table.GAME_STATUSES, 'nothing'),
+            (games, Table.GAMES, 'nothing')
+        ],
+        conn=conn
+    )
+
+    logger.debug('Finished inserting to DB.')
+
+    return sum(rows)
 
 
-async def transform_from_standings(client: AsyncClient,
-                                   season: int) -> pl.DataFrame:
+async def transform_from_standings(
+    conn: dbapi.Connection,
+    client: AsyncClient,
+    season: int
+) -> pl.DataFrame:
     '''
     Extract data from the schedules for the given season.
     Populates Teams, Conferences, ConferenceAlignments.
@@ -264,7 +284,11 @@ def _transform_box(json_raw: dict[str, Any],
     )
 
 
-async def transform_from_game(client: AsyncClient, gid: int) -> pl.DataFrame:
+async def transform_from_game(
+    conn: dbapi.Connection,
+    client: AsyncClient,
+    gid: int
+) -> pl.DataFrame:
     '''
     Extract data from the game.
     Populates Plays, PlayTypes, Players, PlayerSeasons.
@@ -301,8 +325,8 @@ async def transform_from_game(client: AsyncClient, gid: int) -> pl.DataFrame:
         .select(
             pl.col('id').cast(pl.Int64).alias('game_id'),
             pl.col('date').str.to_date(format='%Y-%m-%dT%H:%MZ'),
-            pl.lit(homeId).cast(pl.Int64).alias('home_id'),
-            pl.lit(awayId).cast(pl.Int64).alias('away_id'),
+            pl.lit(home_id).cast(pl.Int64).alias('home_id'),
+            pl.lit(away_id).cast(pl.Int64).alias('away_id'),
             pl.col('neutralSite').alias('is_neutral_site'),
             pl.col('conferenceCompetition').alias('is_conference'),
             pl.col('shotChartAvailable').alias('has_shot_chart'),
@@ -407,8 +431,8 @@ async def transform_from_game(client: AsyncClient, gid: int) -> pl.DataFrame:
 
     players_inter = pl.concat(
         [
-            _transform_box(away_json_box, away_id),
-            _transform_box(home_json_box, home_id)
+            _transform_box(away_box_raw, away_id),
+            _transform_box(home_box_raw, home_id)
         ],
         how='vertical'
     )
@@ -427,7 +451,7 @@ async def transform_from_game(client: AsyncClient, gid: int) -> pl.DataFrame:
 
     season = get_season(
         games
-        .item(row=0, col='date')
+        .item(row=0, column='date')
     )
     player_seasons = (
         players_inter
@@ -443,7 +467,7 @@ async def transform_from_game(client: AsyncClient, gid: int) -> pl.DataFrame:
 
     game_id = (
         games
-        .item(row=0, col='id')
+        .item(row=0, column='id')
     )
     game_logs = (
         players_inter
