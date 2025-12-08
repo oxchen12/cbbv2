@@ -24,7 +24,7 @@ from .date import (
 logger = logging.getLogger(__name__)
 T = TypeVar('T')
 
-# FUTURE: implement switching to women's, perhaps with a module manager
+# TODO: implement switching to women's, perhaps with a module manager
 API_PREFIX = (
     'https://site.web.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball'
 )
@@ -39,8 +39,6 @@ SCHEDULE_TEMPLATE = f'{WEB_PREFIX}/schedule/_/date/{{}}'
 # request parameters
 DEFAULT_TIMEOUT = 30
 DEFAULT_HEADERS = {
-    # TODO: I think this is generic enough that there isn't a security risk
-    #       but I should make sure
     'User-Agent': 'Mozilla/5.0'
 }
 
@@ -52,7 +50,7 @@ def _get_resp(url: str,
               timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
     '''Get the raw json from the API.'''
     # TODO: retry handling
-    logger.debug('fetching from %s...', url)
+    logger.debug('Fetching from %s...', url)
     get_start = time.perf_counter()
     resp = requests.get(
         url=url,
@@ -60,7 +58,7 @@ def _get_resp(url: str,
         headers=DEFAULT_HEADERS
     )
     get_end = time.perf_counter() - get_start
-    logger.debug('got %d (%.2fs)', resp.status_code, get_end)
+    logger.debug('Got %d (%.2fs)', resp.status_code, get_end)
     # TODO: error handling
     if resp.status_code != 200:
         pass
@@ -101,8 +99,8 @@ def _extract_json_from_url(url: str) -> dict[str, Any]:
 def _validate_season(season: int | str):
     try:
         season = int(season)
-    except ValueError:
-        raise ValueError(f'season must be integer-like (got {season})')
+    except ValueError as e:
+        raise ValueError(f'season must be integer-like (got {season})') from e
 
     validate_season(season)
 
@@ -112,9 +110,9 @@ def _validate_schedule_date(date: str | dt.date):
         return
     try:
         date = dt.date.strptime(date, SCHEDULE_DATE_FORMAT)
-    except ValueError:
+    except ValueError as e:
         raise ValueError(
-            f'improperly formatted (got {date}, must be like {SCHEDULE_DATE_FORMAT})')
+            f'improperly formatted (got {date}, must be like {SCHEDULE_DATE_FORMAT})') from e
 
 
 def get_game_url(gid: int | str) -> str:
@@ -216,7 +214,7 @@ class AsyncClient:
         )
 
         # TODO: retry handling
-        logger.debug('fetching from %s...', short_url)
+        logger.debug('Fetching from %s...', short_url)
         get_start = time.perf_counter()
         async with (
             self._semaphore,
@@ -224,7 +222,7 @@ class AsyncClient:
         ):
             # TODO: error handling
             get_end = time.perf_counter() - get_start
-            logger.debug('got %d (%.2fs) from %s',
+            logger.debug('Got %d (%.2fs) from %s',
                          resp.status, get_end, short_url)
             if resp.status != 200:
                 pass
