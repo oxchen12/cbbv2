@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import Sequence
 import logging
 
-from adbc_driver_manager import dbapi
-import adbc_driver_sqlite
+import sqlite3
 import polars as pl
 
 logger = logging.getLogger(__name__)
@@ -67,7 +66,7 @@ def _get_insert_query(
 
 def _execute_insert_query(
     df: pl.DataFrame,
-    conn: dbapi.Connection,
+    conn: sqlite3.Connection,
     query: str
 ) -> int:
     '''Executes the query on the connection.'''
@@ -77,6 +76,7 @@ def _execute_insert_query(
         closing(conn.cursor()) as cursor
     ):
         cursor.executemany(query, df.iter_rows())
+        rows = cursor.rowcount
 
     return rows
 
@@ -84,7 +84,7 @@ def _execute_insert_query(
 def insert_to_db(
     df: pl.DataFrame,
     table: Table,
-    conn: dbapi.Connection,
+    conn: sqlite3.Connection,
     on_conflict: str = 'nothing'
 ) -> int:
     '''
@@ -125,7 +125,7 @@ def insert_to_db(
 
 def inserts_to_db(
     items: list[tuple[pl.DataFrame, Table, str]],
-    conn: dbapi.Connection,
+    conn: sqlite3.Connection,
 ) -> list[int]:
     '''Inserts multiple DataFrames into the specified tables.'''
     # TODO: make this concurrent
@@ -141,8 +141,26 @@ def inserts_to_db(
     return rows
 
 
+def _delete_db(
+    conn: sqlite3.Connection
+) -> bool:
+    with (
+        conn,
+        closing(conn.cursor()) as cursor
+    ):
+        cursor.execute(
+            'SELECT name '
+            'FROM sqlite_master '
+            "WHERE type=\'table\' "
+            "AND name NOT LIKE \'sqlite_%\';"
+        )
+        tables = [x[0] for x in cursor.fetchall()]
+        for table in tables:
+            cursor.execute(f'DROP TABLE IF EXISTS {table};')
+
+
 def init_db(
-    conn: dbapi.Connection,
+    conn: sqlite3.Connection,
     erase: bool = False
 ):
     '''
@@ -163,7 +181,7 @@ def init_db(
 
         if resp == 'y':
             logger.debug('Deleting old %s', DB_FILENAME)
-            DB_FILE.unlink(missing_ok=True)
+            _delete_db(conn)
         else:
             logger.debug('Keeping old %s', DB_FILENAME)
 
@@ -181,7 +199,7 @@ def init_db(
             cursor.executescript(sql_script)
 
         logging.debug('Successfully initialized %s', DB_FILENAME)
-    except Exception as e:
+    except sqlite3.OperationalError as e:
         logging.debug('An error occurred: %s', e)
 
 
