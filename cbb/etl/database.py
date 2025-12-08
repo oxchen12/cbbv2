@@ -128,7 +128,7 @@ def inserts_to_db(
     conn: sqlite3.Connection,
 ) -> list[int]:
     '''Inserts multiple DataFrames into the specified tables.'''
-    # TODO: make this concurrent
+    # TODO: find a database to do concurrent writes
     rows = []
     for df, table, on_conflict in items:
         rows.append(
@@ -144,6 +144,7 @@ def inserts_to_db(
 def _delete_db(
     conn: sqlite3.Connection
 ) -> bool:
+    # TODO: detect fail and do proper rollback
     with (
         conn,
         closing(conn.cursor()) as cursor
@@ -158,11 +159,13 @@ def _delete_db(
         for table in tables:
             cursor.execute(f'DROP TABLE IF EXISTS {table};')
 
+    return True
+
 
 def init_db(
     conn: sqlite3.Connection,
     erase: bool = False
-):
+) -> bool:
     '''
     (Re-)initializes the database file.
     If `erase` is True and file exists, erases the old DB.
@@ -181,26 +184,34 @@ def init_db(
 
         if resp == 'y':
             logger.debug('Deleting old %s', DB_FILENAME)
-            _delete_db(conn)
+            res = _delete_db(conn)
+            if res:
+                logger.debug('Successfully deleted old %s', DB_FILENAME)
+            else:
+                logger.debug('Failed to delete old %s, aborting', DB_FILENAME)
+            return False
         else:
             logger.debug('Keeping old %s', DB_FILENAME)
 
     try:
         with (
             conn,
+            closing(conn.cursor()) as cursor,
             open(
                 SQL_DIR / 'create_tables.sql',
                 mode='r+',
                 encoding='utf-8'
             ) as sql_fp
         ):
-            cursor = conn.cursor()
             sql_script = sql_fp.read()
             cursor.executescript(sql_script)
 
         logging.debug('Successfully initialized %s', DB_FILENAME)
+        return True
+    # TODO: ensure proper rollback procedure
     except sqlite3.OperationalError as e:
         logging.debug('An error occurred: %s', e)
+        return False
 
 
 if __name__ == '__main__':
