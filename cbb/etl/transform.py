@@ -45,7 +45,7 @@ def _get_rep_dates(start: str,
     Assumes start and end are formatted like CALENDAR_DT_FORMAT.
     '''
     start = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
-    start = max(start, DEFAULT_SEASON_START)
+    start = max(start, DEFAULT_SEASON_START.replace(year=start.year))
     end = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
     duration = (end - start).days
     calendar = [
@@ -77,10 +77,11 @@ async def transform_from_schedule(
     # use one sync request to get calendar
     season_start = DEFAULT_SEASON_START.replace(year=season)
     init_schedule = get_raw_schedule_json(season_start)
+    season_json = init_schedule['page']['content']['season']
     # the calendar field for some reason doesn't get every date
     # so instead, we manually generate all dates from start to end
-    season = init_schedule['page']['content']['season']
-    rep_dates = _get_rep_dates(season['startDate'], season['endDate'])
+    rep_dates = _get_rep_dates(
+        season_json['startDate'], season_json['endDate'])
 
     async with client:
         tasks = [
@@ -101,42 +102,45 @@ async def transform_from_schedule(
     ]
 
     # TODO: consider moving all of these to external functions
+    if len(events) == 0:
+        logger.debug('No events found for %d', season)
+        return 0
+
     games_inter = (
         pl.from_dicts(events)
         .lazy()
-        .with_columns(
-            pl.col('id').cast(pl.Int64),
-            pl.col('date').str.to_datetime(time_zone='UTC').alias('datetime'),
+        .select(
             pl.col('teams')
             .list.to_struct(fields=['home', 'away'])
-            .struct.unnest()
-        )
-        .unnest('home', 'away', separator='_')
-        .with_columns(
-            homeId=pl.col('home_id').cast(pl.Int64),
-            awayId=pl.col('away_id').cast(pl.Int64),
+            .struct.unnest(),
+            pl.exclude('teams')
         )
         .select(
-            cs.exclude(
-                'date', 'teams', 'home', 'away',
-                cs.starts_with('home_'),
-                cs.starts_with('away_')
-            )
+            pl.col('id').cast(pl.Int64),
+            pl.col('date')
+            .str.to_datetime(time_zone='UTC').alias('datetime'),
+            'tbd',
+            pl.col('home')
+            .struct.field('id').cast(pl.Int64).alias('home_id'),
+            pl.col('away')
+            .struct.field('id').cast(pl.Int64).alias('away_id'),
+            'venue', 'status'
         )
     )
 
     venues = (
         games_inter
         .select(pl.col('venue').struct.unnest())
-        .unique()
-        .with_columns(
-            pl.col('id').cast(pl.Int64)
-        )
-        .sort('id')
         .unnest('address')
+        .select(
+            pl.col('id').cast(pl.Int64),
+            pl.col('fullName').alias('name'),
+            'city', 'state'
+        )
         .collect()
     )
 
+    # TODO: fix detail values
     game_statuses = (
         games_inter
         .select(pl.col('status').struct.unnest())
@@ -154,8 +158,8 @@ async def transform_from_schedule(
     games = (
         games_inter
         .with_columns(
-            venueId=pl.col('venue').struct.field('id').cast(pl.Int64),
-            statusId=pl.col('status').struct.field('id').cast(pl.Int64)
+            venue_id=pl.col('venue').struct.field('id').cast(pl.Int64),
+            status_id=pl.col('status').struct.field('id').cast(pl.Int64)
         )
         .select(pl.exclude('venue', 'status'))
         .sort('datetime')
