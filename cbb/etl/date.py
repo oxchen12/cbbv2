@@ -2,16 +2,18 @@
 This module contains utility functions for dealing with
 CBB season dates.
 '''
+import datetime as dt
+
+
+def get_season(date: dt.date) -> int:
+    return int(date.month < 7) + date.year
+
 
 # earliest season for which ESPN has data
 MIN_SEASON = 2003
 MAX_SEASON = get_season(dt.date.today())
 
-DEFAULT_SEASON_START = dt.date(MAX_SEASON.year, 11, 1)
-
-
-def get_season(date: dt.date) -> int:
-    return int(date.month < 7) + date.year
+DEFAULT_SEASON_START = dt.date(MAX_SEASON, 11, 1)
 
 
 class InvalidSeasonError(ValueError):
