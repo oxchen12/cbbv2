@@ -32,7 +32,7 @@ class _TableSpec:
 
 class Table(Enum):
     '''
-    Abstraction for a SQL table. 
+    Abstraction for a SQL table.
     Includes table name and primary key.
     '''
     GAMES = _TableSpec('Games', ['id'])
@@ -52,21 +52,15 @@ class Table(Enum):
 
 def _get_insert_query(
     df: pl.DataFrame,
-    table: Table,
+    table_spec: _TableSpec,
 ) -> str:
     '''Returns the template insert query based on the DataFrame.'''
-    cols_spec = ', '.join(
-        f':{col}'
-        for col in df.columns
+    cols_spec = ', '.join(df.columns)
+    dummy_spec = ', '.join(['?'] * len(df.columns))
+    query = (
+        f'INSERT INTO {table_spec.name} ({cols_spec}) '
+        f'VALUES ({dummy_spec})'
     )
-    dummy_spec = ', '.join(
-        '?'
-        for _ in df.columns
-    )
-    query = f'''
-    INSERT INTO {table.name} ({cols_spec})
-    VALUES ({dummy_spec})
-    '''
 
     return query
 
@@ -77,9 +71,12 @@ def _execute_insert_query(
     query: str
 ) -> int:
     '''Executes the query on the connection.'''
-    with conn.driver_init_statement() as stmt:
-        stmt.set_sql_query(query)
-        rows = stmt.execute_update(df.to_arrow())
+    logger.debug('Executing %s', query)
+    with (
+        conn,
+        closing(conn.cursor()) as cursor
+    ):
+        cursor.executemany(query, df.iter_rows())
 
     return rows
 
@@ -96,30 +93,32 @@ def insert_to_db(
 
     Specify `on_conflict` to control conflict behavior.
     '''
-    insert_query = _get_insert_query(df, table)
+    table_spec = table.value
+    insert_query = _get_insert_query(df, table_spec)
+    pk_str = ', '.join(table_spec.primary_key)
 
     if on_conflict == 'update':
         set_spec = ',\n'.join(
             f'\t{col}=excluded.{col}'
             for col in df.columns
         )
-        query = f'''
-        {insert_query}
-        ON CONFLICT ({table.primary_key}) DO UPDATE SET
-        {set_spec};
-        '''
+        query = (
+            f'{insert_query}\n'
+            f'ON CONFLICT ({pk_str}) DO UPDATE SET\n'
+            f'{set_spec};'
+        )
     else:
-        query = f'''
-        {insert_query}
-        ON CONFLICT ({table.primary_key}) DO NOTHING;
-        '''
+        query = (
+            f'{insert_query}\n'
+            f'ON CONFLICT ({pk_str}) DO NOTHING;'
+        )
 
     rows = _execute_insert_query(df, conn, query)
 
     if rows == -1:
-        logger.debug('Failed to insert rows to %s', table.name)
+        logger.debug('Failed to insert rows to %s', table_spec.name)
     else:
-        logger.debug('Inserted %s rows into %s', rows, table.name)
+        logger.debug('Inserted %s rows into %s', rows, table_spec.name)
 
     return rows
 
@@ -184,15 +183,6 @@ def init_db(
         logging.debug('Successfully initialized %s', DB_FILENAME)
     except Exception as e:
         logging.debug('An error occurred: %s', e)
-
-
-def main():
-    '''Main.'''
-    uri = str(DB_FILE)
-    with (
-        closing(adbc_driver_sqlite.connect(uri)) as conn
-    ):
-        init_db(conn, erase=False)
 
 
 if __name__ == '__main__':
