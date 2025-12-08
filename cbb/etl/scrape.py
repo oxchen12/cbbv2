@@ -165,10 +165,17 @@ def get_raw_schedule_json(date: str | dt.date) -> dict[str, Any]:
 class AsyncClient:
     '''Provides an interface for async scraping.'''
 
-    MAX_CONCURRENTS = 10
+    MIN_MAX_CONCURRENTS = 1
+    MAX_MAX_CONCURRENTS = 20
 
-    def __init__(self):
-        self._semaphore = asyncio.Semaphore(AsyncClient.MAX_CONCURRENTS)
+    def __init__(self, max_concurrents: int = 10):
+        if (
+            max_concurrents < AsyncClient.MIN_MAX_CONCURRENTS
+            or max_concurrents > AsyncClient.MAX_MAX_CONCURRENTS
+        ):
+            raise ValueError(
+                f'`max_concurrents` must be between {AsyncClient.MIN_MAX_CONCURRENTS} and {AsyncClient.MAX_MAX_CONCURRENTS}')
+        self._semaphore = asyncio.Semaphore(max_concurrents)
         self._session = None
 
     async def __aenter__(self) -> AsyncClient:
