@@ -9,9 +9,9 @@ import logging
 
 from geopy.geocoders import Nominatim
 from timezonefinder import TimezoneFinder
-from adbc_driver_manager import dbapi
 import polars as pl
 import polars.selectors as cs
+import sqlite3
 
 from .scrape import (
     get_raw_schedule_json,
@@ -20,7 +20,6 @@ from .scrape import (
 )
 from .database import (
     Table,
-    insert_to_db,
     inserts_to_db
 )
 from .date import (
@@ -64,10 +63,10 @@ def _get_rep_dates(start: str,
 
 
 async def transform_from_schedule(
-    conn: dbapi.Connection,
+    conn: sqlite3.Connection,
     client: AsyncClient,
     season: int
-) -> pl.DataFrame:
+) -> int:
     '''
     Extract data from the schedules for the given season.
     Populates Games, Venues, Statuses.
@@ -184,7 +183,7 @@ async def transform_from_schedule(
 
 
 async def transform_from_standings(
-    conn: dbapi.Connection,
+    conn: sqlite3.Connection,
     client: AsyncClient,
     season: int
 ) -> pl.DataFrame:
@@ -289,7 +288,7 @@ def _transform_box(json_raw: dict[str, Any],
 
 
 async def transform_from_game(
-    conn: dbapi.Connection,
+    conn: sqlite3.Connection,
     client: AsyncClient,
     gid: int
 ) -> pl.DataFrame:
