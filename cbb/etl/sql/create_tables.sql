@@ -27,8 +27,7 @@ CREATE TABLE IF NOT EXISTS Venues (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     city TEXT,
-    state TEXT,
-    indoor BOOLEAN
+    state TEXT
 );
 
 CREATE TABLE IF NOT EXISTS Teams (
