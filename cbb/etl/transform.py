@@ -20,6 +20,7 @@ from .scrape import (
 )
 from .database import (
     Table,
+    WriteAction,
     inserts_to_db
 )
 from .date import (
@@ -167,12 +168,11 @@ async def transform_from_schedule(
 
     logger.debug('Tabulation completed. Inserting to DB...')
 
-    # TODO: see if there's a way for me to do these concurrently
     rows = inserts_to_db(
         items=[
-            (venues, Table.VENUES, 'nothing'),
-            (game_statuses, Table.GAME_STATUSES, 'nothing'),
-            (games, Table.GAMES, 'nothing')
+            (venues, Table.VENUES, WriteAction.INSERT),
+            (game_statuses, Table.GAME_STATUSES, WriteAction.INSERT),
+            (games, Table.GAMES, WriteAction.INSERT)
         ],
         conn=conn
     )
@@ -186,7 +186,7 @@ async def transform_from_standings(
     conn: sqlite3.Connection,
     client: AsyncClient,
     season: int
-) -> pl.DataFrame:
+) -> int:
     '''
     Extract data from the schedules for the given season.
     Populates Teams, Conferences, ConferenceAlignments.
@@ -198,7 +198,8 @@ async def transform_from_standings(
     standings_content = standings_json_raw['page']['content']
 
     conferences = (
-        pl.from_dicts(standings_content['headerscoreboard']['collegeConfs'])
+        pl.from_dicts(
+            standings_content['headerscoreboard']['collegeConfs'])
         .filter(pl.col('name').ne('NCAA Division I'))
         .select(
             pl.col('groupId').cast(pl.Int64).alias('id'),
@@ -206,7 +207,6 @@ async def transform_from_standings(
             pl.col('shortName').alias('abbrev')
         )
     )
-    # TODO: insert into Conferences
 
     teams_confs = (
         pl.from_dicts(standings_content['standings']['groups']['groups'])
@@ -219,8 +219,10 @@ async def transform_from_standings(
         .unnest('standings')
         .unnest('team')
         .join(
-            conferences.select(
-                pl.col('cid').alias('conference_id'),
+            conferences
+            .lazy()
+            .select(
+                pl.col('id').alias('conference_id'),
                 'name'
             ),
             left_on='confName',
@@ -237,10 +239,10 @@ async def transform_from_standings(
 
     teams = (
         teams_confs
-        .select(pl.exclude('conference_id'))
+        .with_columns(pl.col('team_id').alias('id'))
+        .select(~cs.ends_with('_id'))
         .collect()
     )
-    # TODO: insert into Teams
 
     conference_alignments = (
         teams_confs
@@ -251,16 +253,27 @@ async def transform_from_standings(
         )
         .collect()
     )
-    # TODO: insert into ConferenceAlignments
 
-    # TODO: not yet implemented
-    return pl.DataFrame()
+    logger.debug('Tabulation completed. Inserting to DB...')
+
+    rows = inserts_to_db(
+        items=[
+            (conferences, Table.CONFERENCES, WriteAction.INSERT),
+            (teams, Table.TEAMS, WriteAction.INSERT),
+            (conference_alignments, Table.CONFERENCE_ALIGNMENTS, WriteAction.INSERT)
+        ],
+        conn=conn
+    )
+
+    logger.debug('Finished inserting to DB.')
+
+    return sum(rows)
 
 
 def _transform_box(json_raw: dict[str, Any],
                    team_id: int) -> pl.DataFrame:
     return (
-        pl.from_dicts(json_raw)
+        pl.from_dicts(json_raw['athletes'])
         .lazy()
         .unnest('athlete')
         .with_columns(
@@ -321,13 +334,13 @@ async def transform_from_game(
             pl.col('team_alternateColor').alias('alt_color')
         )
     )
-    # TODO: update Teams
 
     games = (
         pl.from_dicts(competition_raw)
         .select(
-            pl.col('id').cast(pl.Int64).alias('game_id'),
-            pl.col('date').str.to_date(format='%Y-%m-%dT%H:%MZ'),
+            pl.col('id').cast(pl.Int64),
+            pl.col('date').str.to_date(
+                format='%Y-%m-%dT%H:%MZ').alias('datetime'),
             pl.lit(home_id).cast(pl.Int64).alias('home_id'),
             pl.lit(away_id).cast(pl.Int64).alias('away_id'),
             pl.col('neutralSite').alias('is_neutral_site'),
@@ -336,7 +349,6 @@ async def transform_from_game(
             pl.lit(attendance).alias('attendance')
         )
     )
-    # TODO: update Games
 
     plays_inter = (
         pl.from_dicts(game_json_raw['plays'])
@@ -413,7 +425,7 @@ async def transform_from_game(
             'game_id', 'sequence_id', 'play_type_id',
             'points_attempted', 'is_score',
             'team_id', 'player_id', 'assist_id',
-            'period', 'game_clock_minutes', 'game_clock_seconds',
+            'period', 'clock_minutes', 'clock_seconds',
             'home_score', 'away_score', 'x_coord', 'y_coord',
             'timestamp'
         )
@@ -430,7 +442,6 @@ async def transform_from_game(
         )
         .collect()
     )
-    # TODO: insert into PlayTypes
 
     players_inter = pl.concat(
         [
@@ -450,11 +461,10 @@ async def transform_from_game(
         )
         .collect()
     )
-    # TODO: insert into Players
 
     season = get_season(
         games
-        .item(row=0, column='date')
+        .item(row=0, column='datetime')
     )
     player_seasons = (
         players_inter
@@ -466,7 +476,6 @@ async def transform_from_game(
         )
         .collect()
     )
-    # TODO: insert into PlayerSeasons
 
     game_id = (
         games
@@ -476,17 +485,33 @@ async def transform_from_game(
         players_inter
         .select(
             pl.col('id').alias('player_id'),
-            pl.lit(game_id),
+            pl.lit(game_id).alias('game_id'),
             'played',
             'started',
             'ejected'
         )
         .collect()
     )
-    # TODO: insert into GameLogs
+
+    logger.debug('Tabulation completed. Inserting to DB...')
+
+    rows = inserts_to_db(
+        items=[
+            (teams, Table.TEAMS, WriteAction.UPDATE),
+            (games, Table.GAMES, WriteAction.UPDATE),
+            (plays, Table.PLAYS, WriteAction.INSERT),
+            (play_types, Table.PLAY_TYPES, WriteAction.INSERT),
+            (players, Table.PLAYERS, WriteAction.INSERT),
+            (player_seasons, Table.PLAYER_SEASONS, WriteAction.INSERT),
+            (game_logs, Table.GAME_LOGS, WriteAction.INSERT)
+        ],
+        conn=conn
+    )
+
+    logger.debug('Finished inserting to DB.')
 
     # TODO: not yet implemented
-    return pl.DataFrame()
+    return sum(rows)
 
 
 def get_plays(gid: int | str) -> pl.DataFrame:
