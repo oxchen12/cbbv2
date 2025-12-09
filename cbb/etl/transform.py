@@ -7,8 +7,6 @@ import asyncio
 import datetime as dt
 import logging
 
-from geopy.geocoders import Nominatim
-from timezonefinder import TimezoneFinder
 import polars as pl
 import polars.selectors as cs
 import sqlite3
@@ -44,14 +42,17 @@ def _get_rep_dates(start: str,
     Get the necessary dates to fetch between start and end.
     Assumes start and end are formatted like CALENDAR_DT_FORMAT.
     '''
-    start = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
-    start = max(start, DEFAULT_SEASON_START.replace(year=start.year))
-    end = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
-    duration = (end - start).days
-    calendar = [
-        start + dt.timedelta(days=d)
-        for d in range(duration)
-    ]
+    start_date = max(
+        dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date(),
+        DEFAULT_SEASON_START.replace(year=start.year)
+    )
+    end_date = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
+    calendar = pl.date_range(
+        start_date,
+        end_date,
+        interval=dt.timedelta(days=1),
+        eager=True
+    )
     # minimize pages to search by accessing schedules from
     # adjacent dates
     rep_dates = [
@@ -402,9 +403,7 @@ async def transform_from_game(
             is_shot=pl.col('shootingPlay'),
             is_score=pl.col('scoringPlay'),
             points_attempted=pl.col('pointsAttempted'),
-            # TODO: time zone logic from venue
-            timestamp=pl.col('wallclock').cast(
-                pl.Datetime)  # .dt.convert_time_zone(tz),
+            timestamp=pl.col('wallclock').cast(pl.Datetime)
         )
         .select(
             'game_id', 'sequence_id', 'text',
@@ -512,80 +511,3 @@ async def transform_from_game(
 
     # TODO: not yet implemented
     return sum(rows)
-
-
-def get_plays(gid: int | str) -> pl.DataFrame:
-    '''
-    Get the plays from the raw json and perform cleaning and transformation.
-    '''
-    # TODO: error logic
-    plays_raw = get_raw_game_json(gid)['plays']
-    plays = (
-        pl.from_dicts(plays_raw)
-        .unnest(
-            'type',
-            'period',
-            'clock',
-            'coordinate',
-            'team',
-            separator='_'
-        )
-        .with_columns(
-            pl.col('clock_displayValue').str.split(':')
-        )
-        .with_columns(
-            game_id=pl.lit(gid),
-            player_id=(
-                pl.col('participants')
-                .list.first()
-                .struct.field('*')
-                .struct.field('*')
-                .cast(pl.Int64)
-            ),
-            assist_id=(
-                pl.when(pl.col('participants').list.len().gt(1))
-                .then(
-                    pl.col('participants')
-                    .list.last()
-                    .struct.field('*')
-                    .struct.field('*')
-                    .cast(pl.Int64)
-                )
-                .otherwise(None)
-            ),
-            period=pl.col('period_number'),
-            period_display=pl.col('period_displayValue'),
-            sequence_id=pl.col('sequenceNumber').cast(pl.Int64),
-            play_type_id=pl.col('type_id').cast(pl.Int64),
-            play_type_text=pl.col('type_text'),
-            team_id=pl.col('team_id').cast(pl.Int64),
-            x_coord=pl.col('coordinate_x'),
-            y_coord=pl.col('coordinate_y'),
-            clock_minutes=pl.col(
-                'clock_displayValue').list.get(0).cast(pl.Int64),
-            clock_seconds=pl.col(
-                'clock_displayValue').list.get(1).cast(pl.Int64),
-            description=pl.col('shortDescription'),
-            away_score=pl.col('awayScore'),
-            home_score=pl.col('homeScore'),
-            is_shot=pl.col('shootingPlay'),
-            is_score=pl.col('scoringPlay'),
-            points_attempted=pl.col('pointsAttempted'),
-            # TODO: time zone logic from venue
-            timestamp=pl.col('wallclock').cast(
-                pl.Datetime)  # .dt.convert_time_zone(tz),
-        )
-        .select(
-            'game_id', 'sequence_id', 'text',
-            'description', 'play_type_id', 'play_type_text',
-            'is_shot', 'points_attempted', 'is_score',
-            'team_id', 'player_id', 'assist_id',
-            'period', 'period_display',
-            'clock_minutes', 'clock_seconds',
-            'away_score', 'home_score',
-            'x_coord', 'y_coord',
-            'timestamp'
-        )
-    )
-
-    return plays
