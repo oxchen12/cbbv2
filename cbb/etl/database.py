@@ -4,7 +4,7 @@ operations within the parent module.
 '''
 from contextlib import closing
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, auto
 from pathlib import Path
 from typing import Sequence
 import logging
@@ -49,13 +49,19 @@ class Table(Enum):
     GAME_LOGS = _TableSpec('GameLogs', ['player_id', 'game_id'])
 
 
+class WriteAction(Enum):
+    INSERT = 'insert'
+    UPDATE = 'updat'
+    UPSERT = 'upsert'
+
+
 def _get_insert_query(
     df: pl.DataFrame,
     table_spec: _TableSpec,
 ) -> str:
     '''Returns the template insert query based on the DataFrame.'''
     cols_spec = ', '.join(df.columns)
-    dummy_spec = ', '.join(['?'] * len(df.columns))
+    dummy_spec = ', '.join(f':{col}' for col in df.columns)
     query = (
         f'INSERT INTO {table_spec.name} ({cols_spec}) '
         f'VALUES ({dummy_spec})'
@@ -70,13 +76,16 @@ def _execute_insert_query(
     query: str
 ) -> int:
     '''Executes the query on the connection.'''
-    logger.debug('Executing %s', query)
-    with (
-        conn,
-        closing(conn.cursor()) as cursor
-    ):
-        cursor.executemany(query, df.iter_rows())
-        rows = cursor.rowcount
+    try:
+        with (
+            conn,
+            closing(conn.cursor()) as cursor
+        ):
+            cursor.executemany(query, df.iter_rows(named=True))
+            rows = cursor.rowcount
+    except sqlite3.Error as e:
+        logger.debug('An error occurred during query execution: %s', e)
+        rows = -1
 
     return rows
 
@@ -85,7 +94,7 @@ def insert_to_db(
     df: pl.DataFrame,
     table: Table,
     conn: sqlite3.Connection,
-    on_conflict: str = 'nothing'
+    write_action: WriteAction = WriteAction.INSERT
 ) -> int:
     '''
     Inserts the rows from the DataFrame into the specified table.
@@ -97,48 +106,83 @@ def insert_to_db(
     insert_query = _get_insert_query(df, table_spec)
     pk_str = ', '.join(table_spec.primary_key)
 
-    if on_conflict == 'update':
-        set_spec = ',\n'.join(
-            f'\t{col}=excluded.{col}'
-            for col in df.columns
-        )
-        query = (
-            f'{insert_query}\n'
-            f'ON CONFLICT ({pk_str}) DO UPDATE SET\n'
-            f'{set_spec};'
-        )
-    else:
-        query = (
-            f'{insert_query}\n'
-            f'ON CONFLICT ({pk_str}) DO NOTHING;'
-        )
+    match write_action:
+        case WriteAction.UPSERT:
+            upsert_set_spec = ',\n'.join(
+                f'\t{col}=excluded.{col}'
+                for col in df.columns
+                if col not in table_spec.primary_key
+            )
+            query = (
+                f'{insert_query}\n'
+                f'ON CONFLICT ({pk_str}) DO UPDATE SET\n'
+                f'{upsert_set_spec};'
+            )
+        case WriteAction.UPDATE:
+            update_set_spec = ', '.join(
+                f'{col} = :{col}'
+                for col in df.columns
+                if col not in table_spec.primary_key
+            )
+            update_pk_spec = ' AND '.join(
+                f'{col} = :{col}'
+                for col in df.columns
+                if col in table_spec.primary_key
+            )
+            query = (
+                f'UPDATE {table_spec.name}\n'
+                f'SET {update_set_spec}\n'
+                f'WHERE {update_pk_spec}\n;'
+            )
+        case _:
+            query = (
+                f'{insert_query}\n'
+                f'ON CONFLICT ({pk_str}) DO NOTHING;'
+            )
 
     rows = _execute_insert_query(df, conn, query)
 
     if rows == -1:
         logger.debug('Failed to insert rows to %s', table_spec.name)
     else:
-        logger.debug('Inserted %s rows into %s', rows, table_spec.name)
+        logger.debug(
+            '%sed %d rows in %s',
+            write_action.value.title(),
+            rows,
+            table_spec.name
+        )
 
     return rows
 
 
 def inserts_to_db(
-    items: list[tuple[pl.DataFrame, Table, str]],
+    items: list[tuple[pl.DataFrame, Table, WriteAction]],
     conn: sqlite3.Connection,
 ) -> list[int]:
-    '''Inserts multiple DataFrames into the specified tables.'''
-    # TODO: find a database to do concurrent writes
+    '''
+    Inserts multiple DataFrames into the specified tables.
+    Returns the number of affected rows.
+    '''
+    # TODO: find a database package to do concurrent writes
     rows = []
     for df, table, on_conflict in items:
         rows.append(
             insert_to_db(
                 df, table, conn,
-                on_conflict=on_conflict
+                write_action=on_conflict
             )
         )
 
-    return rows
+    results = zip(items, rows)
+    failed_tables = [res[0][1].value.name for res in results if res[1] == -1]
+    if len(failed_tables) > 0:
+        logger.debug(
+            f'Failed to insert to the following tables: {failed_tables}')
+
+    success_rows = sum(x for x in rows if x >= 0)
+    logger.debug(f'Affected {success_rows} rows')
+
+    return [x if x >= 0 else -1 for x in rows]
 
 
 def _delete_db(
@@ -174,7 +218,7 @@ def init_db(
         resp = ''
         while resp not in ('y', 'n'):
             usr_in = input(
-                f'Are you sure you want to delete {DB_FILENAME}? (Y/[N]) '
+                f'Are you sure you want to drop all tables from {DB_FILENAME}? (Y/[N]) '
             ).strip()
 
             resp = usr_in.lower()
@@ -183,15 +227,17 @@ def init_db(
             resp = resp[0]
 
         if resp == 'y':
-            logger.debug('Deleting old %s', DB_FILENAME)
+            logger.debug('Dropping tables from %s', DB_FILENAME)
             res = _delete_db(conn)
             if res:
-                logger.debug('Successfully deleted old %s', DB_FILENAME)
+                logger.debug(
+                    'Successfully dropped tables from %s', DB_FILENAME)
             else:
-                logger.debug('Failed to delete old %s, aborting', DB_FILENAME)
-            return False
+                logger.debug(
+                    'Failed to drop tables from %s, aborting', DB_FILENAME)
+                return False
         else:
-            logger.debug('Keeping old %s', DB_FILENAME)
+            logger.debug('Using existing %s', DB_FILENAME)
 
     try:
         with (
