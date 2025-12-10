@@ -18,7 +18,7 @@ SUBMODULE_DIR = Path(__file__).parent
 SQL_DIR = SUBMODULE_DIR / 'sql'
 
 DB_DIR = Path.cwd() / 'db'
-DB_FILENAME = 'cbb.db'
+DB_FILENAME = 'cbb.sqlite'
 DB_FILE = DB_DIR / DB_FILENAME
 
 
