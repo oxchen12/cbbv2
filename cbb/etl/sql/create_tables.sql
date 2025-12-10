@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS Games (
     id INTEGER PRIMARY KEY,
-    datetime TEXT,
+    datetime DATETIME,
     home_id INTEGER NOT NULL,
     away_id INTEGER NOT NULL,
     venue_id INTEGER NOT NULL,
@@ -19,23 +19,23 @@ CREATE TABLE IF NOT EXISTS Games (
 
 CREATE TABLE IF NOT EXISTS GameStatuses (
     id INTEGER PRIMARY KEY,
-    state TEXT,
-    detail TEXT
+    state VARCHAR,
+    detail VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS Venues (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    city TEXT,
-    state TEXT
+    name VARCHAR NOT NULL,
+    city VARCHAR,
+    state VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS Teams (
     id INTEGER PRIMARY KEY,
-    location TEXT NOT NULL,
-    mascot TEXT NOT NULL,
+    location VARCHAR NOT NULL,
+    mascot VARCHAR NOT NULL,
     -- not sure
-    abbrev TEXT NOT NULL,
+    abbrev VARCHAR NOT NULL,
     color VARCHAR(6),
     alt_color VARCHAR(6)
 );
@@ -51,8 +51,8 @@ CREATE TABLE IF NOT EXISTS ConferenceAlignments (
 
 CREATE TABLE IF NOT EXISTS Conferences (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    abbrev TEXT NOT NULL
+    name VARCHAR NOT NULL,
+    abbrev VARCHAR NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS Plays (
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS Plays (
     away_score INTEGER CHECK (away_score >= 0),
     x_coord INTEGER,
     y_coord INTEGER,
-    timestamp TEXT,
+    timestamp DATETIME,
     PRIMARY KEY (game_id, sequence_id),
     FOREIGN KEY (game_id) REFERENCES Games (id),
     FOREIGN KEY (play_type_id) REFERENCES PlayTypes (id),
@@ -82,20 +82,20 @@ CREATE TABLE IF NOT EXISTS Plays (
 
 CREATE TABLE IF NOT EXISTS PlayTypes (
     id INTEGER PRIMARY KEY,
-    description TEXT,
+    description VARCHAR,
     is_shot BOOLEAN
 );
 
 CREATE TABLE IF NOT EXISTS Players (
     id INTEGER PRIMARY KEY,
-    first_name TEXT NOT NULL,
-    last_name TEXT NOT NULL,
+    first_name VARCHAR NOT NULL,
+    last_name VARCHAR NOT NULL,
     position VARCHAR(1),
     height_ft INTEGER,
     height_in INTEGER,
     weight INTEGER,
-    birth_city TEXT,
-    birth_state TEXT
+    birth_city VARCHAR,
+    birth_state VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS PlayerSeasons (
