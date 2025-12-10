@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS GameLogs (
     -- TODO: should there be stats here
     PRIMARY KEY (player_id, game_id),
     FOREIGN KEY (player_id) REFERENCES Players (id),
-    FOREIGN KEY (game_id) REFERENCES Teams (id)
+    FOREIGN KEY (game_id) REFERENCES Games (id)
 );
 
 -- FUTURE: AP Top 25 Ranking snapshots
