@@ -17,7 +17,6 @@ import aiohttp
 import requests
 
 from .date import (
-    get_season,
     validate_season
 )
 
@@ -32,9 +31,11 @@ GAME_API_TEMPLATE = (
     f'{API_PREFIX}/summary?region=us&lang=en&contentorigin=espn&event={{}}'
 )
 CONFERENCES_API_URL = f'{API_PREFIX}/scoreboard/conferences?groups=50'
+
 WEB_PREFIX = 'https://www.espn.com/mens-college-basketball'
 STANDINGS_TEMPLATE = f'{WEB_PREFIX}/standings/_/season/{{}}'
 SCHEDULE_TEMPLATE = f'{WEB_PREFIX}/schedule/_/date/{{}}'
+PLAYER_TEMPLATE = f'{WEB_PREFIX}/player/_/id/{{}}'
 
 # request parameters
 DEFAULT_TIMEOUT = 30
@@ -115,9 +116,9 @@ def _validate_schedule_date(date: str | dt.date):
             f'improperly formatted (got {date}, must be like {SCHEDULE_DATE_FORMAT})') from e
 
 
-def get_game_url(gid: int | str) -> str:
-    '''Get the url for the given gid.'''
-    return GAME_API_TEMPLATE.format(gid)
+def get_game_url(game_id: int | str) -> str:
+    '''Get the url for the given game_id.'''
+    return GAME_API_TEMPLATE.format(game_id)
 
 
 def get_standings_url(season: int | str) -> str:
@@ -137,9 +138,14 @@ def _(date: dt.date):
     return get_schedule_url(date_str)
 
 
-def get_raw_game_json(gid: int | str) -> dict[str, Any]:
+def get_player_url(player_id: int | str) -> str:
+    '''Get the url for the given player_id.'''
+    return PLAYER_TEMPLATE.format(player_id)
+
+
+def get_raw_game_json(game_id: int | str) -> dict[str, Any]:
     '''Get the raw json from the game page.'''
-    url = get_game_url(gid)
+    url = get_game_url(game_id)
     return _get_resp(url).json()
 
 
@@ -157,6 +163,12 @@ def get_raw_schedule_json(date: str | dt.date) -> dict[str, Any]:
     '''
     _validate_schedule_date(date)
     url = get_schedule_url(date)
+    return _extract_json_from_url(url)
+
+
+def get_raw_player_json(player_id: str | int) -> dict[str, Any]:
+    '''Get the raw json from the player page.'''
+    url = get_player_url(player_id)
     return _extract_json_from_url(url)
 
 
@@ -178,6 +190,7 @@ class AsyncClient:
 
     async def __aenter__(self) -> AsyncClient:
         if self._session is None:
+            logger.debug('Creating new session')
             self._session = aiohttp.ClientSession(
                 headers=DEFAULT_HEADERS,
                 # TODO: error logic
@@ -188,6 +201,7 @@ class AsyncClient:
 
     async def __aexit__(self, exc_type, exc, tb):
         if self._session:
+            logger.debug('Exiting session')
             await self._session.close()
             self._session = None
 
@@ -244,22 +258,39 @@ class AsyncClient:
 
         return await self._fetch(url, process_json)
 
-    async def get_raw_game_json(self, gid: int | str) -> dict[str, Any]:
+    async def get_raw_game_json(
+        self,
+        game_id: int | str
+    ) -> dict[str, Any]:
         '''Get the raw json from the game page.'''
-        url = get_game_url(gid)
+        url = get_game_url(game_id)
         return await self._extract_as_json(url)
 
-    async def get_raw_standings_json(self, season: int | str) -> dict[str, Any]:
+    async def get_raw_standings_json(
+        self,
+        season: int | str
+    ) -> dict[str, Any]:
         '''Get the raw json from the standings page for a season.'''
         _validate_season(season)
         url = get_standings_url(season)
         return await self._extract_json_from_html(url)
 
-    async def get_raw_schedule_json(self, date: str | dt.date) -> dict[str, Any]:
+    async def get_raw_schedule_json(
+        self,
+        date: str | dt.date
+    ) -> dict[str, Any]:
         '''
         Get the raw json from the schedule page for a given date.
         A date `str` should be formatted as SCHEDULE_DATE_FORMAT.
         '''
         _validate_schedule_date(date)
         url = get_schedule_url(date)
+        return await self._extract_json_from_html(url)
+
+    async def get_raw_player_json(
+        self,
+        player_id: int | str
+    ) -> dict[str, Any]:
+        '''Get the raw json from the player page.'''
+        url = get_player_url(player_id)
         return await self._extract_json_from_html(url)
