@@ -3,7 +3,6 @@ This module provides functions for scraping data from ESPN.
 '''
 from __future__ import annotations
 
-from functools import singledispatch
 from typing import Any, TypeVar, Callable, Awaitable
 import asyncio
 import datetime as dt
@@ -106,16 +105,6 @@ def _validate_season(season: int | str):
     validate_season(season)
 
 
-def _validate_schedule_date(date: str | dt.date):
-    if isinstance(date, dt.date):
-        return
-    try:
-        date = dt.date.strptime(date, SCHEDULE_DATE_FORMAT)
-    except ValueError as e:
-        raise ValueError(
-            f'improperly formatted (got {date}, must be like {SCHEDULE_DATE_FORMAT})') from e
-
-
 def get_game_url(game_id: int | str) -> str:
     '''Get the url for the given game_id.'''
     return GAME_API_TEMPLATE.format(game_id)
@@ -126,16 +115,10 @@ def get_standings_url(season: int | str) -> str:
     return STANDINGS_TEMPLATE.format(season)
 
 
-@singledispatch
-def get_schedule_url(date: str):
+def get_schedule_url(date: dt.date):
     '''Get the url for the given date's schedule.'''
-    return SCHEDULE_TEMPLATE.format(date)
-
-
-@get_schedule_url.register
-def _(date: dt.date):
     date_str = date.strftime(SCHEDULE_DATE_FORMAT)
-    return get_schedule_url(date_str)
+    return SCHEDULE_TEMPLATE.format(date)
 
 
 def get_player_url(player_id: int | str) -> str:
@@ -156,12 +139,10 @@ def get_raw_standings_json(season: int | str) -> dict[str, Any]:
     return _extract_json_from_url(url)
 
 
-def get_raw_schedule_json(date: str | dt.date) -> dict[str, Any]:
+def get_raw_schedule_json(date: dt.date) -> dict[str, Any]:
     '''
     Get the raw json from the schedule page for a given date.
-    The date MUST be formatted as YYYYMMDD.
     '''
-    _validate_schedule_date(date)
     url = get_schedule_url(date)
     return _extract_json_from_url(url)
 
@@ -277,13 +258,12 @@ class AsyncClient:
 
     async def get_raw_schedule_json(
         self,
-        date: str | dt.date
+        date: dt.date
     ) -> dict[str, Any]:
         '''
         Get the raw json from the schedule page for a given date.
         A date `str` should be formatted as SCHEDULE_DATE_FORMAT.
         '''
-        _validate_schedule_date(date)
         url = get_schedule_url(date)
         return await self._extract_json_from_html(url)
 
