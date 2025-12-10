@@ -7,9 +7,9 @@ import asyncio
 import datetime as dt
 import logging
 
+import duckdb
 import polars as pl
 import polars.selectors as cs
-import sqlite3
 
 from .scrape import (
     get_raw_schedule_json,
@@ -66,7 +66,7 @@ def _get_rep_dates(start: str,
 
 
 async def transform_from_schedule(
-    conn: sqlite3.Connection,
+    conn: duckdb.Connection,
     client: AsyncClient,
     season: int
 ) -> int:
@@ -219,7 +219,7 @@ async def transform_from_schedule(
 
 
 async def transform_from_standings(
-    conn: sqlite3.Connection,
+    conn: duckdb.Connection,
     client: AsyncClient,
     season: int
 ) -> int:
@@ -332,7 +332,7 @@ def _transform_box(json_raw: dict[str, Any],
 
 
 async def transform_from_game(
-    conn: sqlite3.Connection,
+    conn: duckdb.Connection,
     client: AsyncClient,
     game_id: int
 ) -> pl.DataFrame:
@@ -523,7 +523,7 @@ async def transform_from_game(
 
 
 async def transform_from_player(
-    conn: sqlite3.Connection,
+    conn: duckdb.Connection,
     client: AsyncClient,
     player_id: int
 ) -> int:
