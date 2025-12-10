@@ -114,21 +114,10 @@ async def transform_from_schedule(
         pl.from_dicts(events)
         .lazy()
         .select(
-            pl.col('teams')
-            .list.to_struct(fields=['home', 'away'])
-            .struct.unnest(),
-            pl.exclude('teams')
-        )
-        .select(
             pl.col('id').cast(pl.Int64),
             pl.col('date')
             .str.to_datetime(time_zone='UTC').alias('datetime'),
-            'tbd',
-            pl.col('home')
-            .struct.field('id').cast(pl.Int64).alias('home_id'),
-            pl.col('away')
-            .struct.field('id').cast(pl.Int64).alias('away_id'),
-            'venue', 'status'
+            'tbd', 'teams', 'venue', 'status'
         )
     )
 
@@ -159,29 +148,72 @@ async def transform_from_schedule(
         .collect()
     )
 
+    teams = (
+        games_inter
+        .select(
+            pl.col('teams')
+            .list.explode()
+        )
+        .unnest('teams')
+        .unique('id')
+        .select(
+            pl.col('id').cast(pl.Int64),
+            'location',
+            pl.col('shortDisplayName').alias('mascot'),
+            'abbrev',
+            pl.col('teamColor').alias('color'),
+            pl.col('altColor').alias('alt_color')
+        )
+        .collect()
+    )
+
     games = (
         games_inter
         .with_columns(
-            venue_id=pl.col('venue').struct.field('id').cast(pl.Int64),
-            status_id=pl.col('status').struct.field('id').cast(pl.Int64)
+            pl.col('teams').list.to_struct(fields=['home', 'away']),
+            (
+                pl.col('venue')
+                .struct.field('id')
+                .cast(pl.Int64)
+                .alias('venue_id')
+            ),
+            (
+                pl.col('status')
+                .struct.field('id')
+                .cast(pl.Int64)
+                .alias('status_id')
+            )
         )
-        .select(pl.exclude('venue', 'status'))
+        .select(
+            pl.exclude('venue', 'status'),
+            (
+                pl.col('teams')
+                .struct.field('home')
+                .struct.field('id')
+                .cast(pl.Int64)
+                .alias('home_id')
+            ),
+            (
+                pl.col('teams')
+                .struct.field('away')
+                .struct.field('id')
+                .cast(pl.Int64)
+                .alias('away_id')
+            ),
+        )
         .sort('datetime')
         .collect()
     )
 
-    logger.debug('Tabulation completed. Inserting to DB...')
-
     rows = writes_db(
         items=[
             (venues, Table.VENUES, WriteAction.INSERT),
+            (teams, Table.TEAMS, WriteAction.INSERT),
             (game_statuses, Table.GAME_STATUSES, WriteAction.INSERT),
             (games, Table.GAMES, WriteAction.INSERT)
         ],
         conn=conn
     )
-
-    logger.debug('Finished inserting to DB.')
 
     return sum(rows)
 
@@ -257,8 +289,6 @@ async def transform_from_standings(
         .collect()
     )
 
-    logger.debug('Tabulation completed. Inserting to DB...')
-
     rows = writes_db(
         items=[
             (conferences, Table.CONFERENCES, WriteAction.INSERT),
@@ -267,8 +297,6 @@ async def transform_from_standings(
         ],
         conn=conn
     )
-
-    logger.debug('Finished inserting to DB.')
 
     return sum(rows)
 
@@ -419,6 +447,16 @@ async def transform_from_game(
         )
     )
 
+    play_types = (
+        plays_inter
+        .select(
+            pl.col('play_type_id').alias('id'),
+            pl.col('play_type_text').alias('description'),
+            pl.col('is_shot')
+        )
+        .collect()
+    )
+
     plays = (
         plays_inter
         .select(
@@ -428,16 +466,6 @@ async def transform_from_game(
             'period', 'clock_minutes', 'clock_seconds',
             'home_score', 'away_score', 'x_coord', 'y_coord',
             'timestamp'
-        )
-        .collect()
-    )
-
-    play_types = (
-        plays_inter
-        .select(
-            pl.col('play_type_id').alias('id'),
-            pl.col('play_type_text').alias('description'),
-            pl.col('is_shot')
         )
         .collect()
     )
@@ -492,24 +520,19 @@ async def transform_from_game(
         .collect()
     )
 
-    logger.debug('Tabulation completed. Inserting to DB...')
-
     rows = writes_db(
         items=[
             (teams, Table.TEAMS, WriteAction.UPDATE),
             (games, Table.GAMES, WriteAction.UPDATE),
-            (plays, Table.PLAYS, WriteAction.INSERT),
             (play_types, Table.PLAY_TYPES, WriteAction.INSERT),
             (players, Table.PLAYERS, WriteAction.INSERT),
+            (plays, Table.PLAYS, WriteAction.INSERT),
             (player_seasons, Table.PLAYER_SEASONS, WriteAction.INSERT),
             (game_logs, Table.GAME_LOGS, WriteAction.INSERT)
         ],
         conn=conn
     )
 
-    logger.debug('Finished inserting to DB.')
-
-    # TODO: not yet implemented
     return sum(rows)
 
 
