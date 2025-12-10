@@ -93,7 +93,9 @@ CREATE TABLE IF NOT EXISTS Players (
     position VARCHAR(1),
     height_ft INTEGER,
     height_in INTEGER,
-    weight INTEGER
+    weight INTEGER,
+    birth_city TEXT,
+    birth_state TEXT
 );
 
 CREATE TABLE IF NOT EXISTS PlayerSeasons (
