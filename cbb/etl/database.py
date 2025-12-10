@@ -129,6 +129,7 @@ def write_db(
     Specify `on_conflict` to control conflict behavior.
     '''
     table_spec = table.value
+    logger.debug('Writing to %s', table_spec.name)
     insert_query = _get_insert_query(df, table_spec)
     pk_str = ', '.join(table_spec.primary_key)
 
@@ -184,7 +185,7 @@ def writes_db(
     Inserts multiple DataFrames into the specified tables.
     Returns the number of affected rows.
     '''
-    # TODO: find a database package to do concurrent writes
+    logger.debug('Writing tables...')
     rows = []
     for df, table, on_conflict in items:
         rows.append(
