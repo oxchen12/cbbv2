@@ -19,7 +19,10 @@ DEFAULT_SEASON_START = dt.date(MAX_SEASON, 11, 1)
 class InvalidSeasonError(ValueError):
     '''Raised when a season is out of range.'''
 
-    def __init__(self, message: str = f"Season must be between {MIN_SEASON} and {MAX_SEASON}"):
+    def __init__(
+        self,
+        message: str = f"Season must be between {MIN_SEASON} and {MAX_SEASON}"
+    ):
         super().__init__(message)
 
 
