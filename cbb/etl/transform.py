@@ -85,12 +85,11 @@ async def transform_from_schedule(
     rep_dates = _get_rep_dates(
         season_json['startDate'], season_json['endDate'])
 
-    async with client:
-        tasks = [
-            client.get_raw_schedule_json(date)
-            for date in rep_dates
-        ]
-        schedule_results = await asyncio.gather(*tasks)
+    tasks = [
+        client.get_raw_schedule_json(date)
+        for date in rep_dates
+    ]
+    schedule_results = await asyncio.gather(*tasks)
 
     events = [
         {
@@ -195,8 +194,7 @@ async def transform_from_standings(
     '''
     validate_season(season)
 
-    async with client:
-        standings_json_raw = await client.get_raw_standings_json(season)
+    standings_json_raw = await client.get_raw_standings_json(season)
     standings_content = standings_json_raw['page']['content']
 
     conferences = (
@@ -312,8 +310,7 @@ async def transform_from_game(
     Populates Plays, PlayTypes, Players, PlayerSeasons.
     Updates Teams, Games.
     '''
-    async with client:
-        game_json_raw = await client.get_raw_game_json(gid)
+    game_json_raw = await client.get_raw_game_json(game_id)
     attendance = game_json_raw['gameInfo']['attendance']
     competition_raw = game_json_raw['header']['competitions'][0]
     competitors_raw = competition_raw.pop('competitors')
