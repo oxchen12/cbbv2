@@ -42,9 +42,10 @@ def _get_rep_dates(start: str,
     Get the necessary dates to fetch between start and end.
     Assumes start and end are formatted like CALENDAR_DT_FORMAT.
     '''
+    start_date = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
     start_date = max(
-        dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date(),
-        DEFAULT_SEASON_START.replace(year=start.year)
+        start_date,
+        DEFAULT_SEASON_START.replace(year=start_date.year)
     )
     end_date = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
     calendar = pl.date_range(
