@@ -50,9 +50,9 @@ class Table(Enum):
 
 
 class WriteAction(Enum):
-    INSERT = 'insert'
-    UPDATE = 'updat'
-    UPSERT = 'upsert'
+    INSERT = auto()
+    UPDATE = auto()
+    UPSERT = auto()
 
 
 def _get_insert_query(
@@ -145,9 +145,17 @@ def insert_to_db(
     if rows == -1:
         logger.debug('Failed to insert rows to %s', table_spec.name)
     else:
+        match write_action:
+            case WriteAction.UPSERT:
+                write_action_str = 'Upserted'
+            case WriteAction.UPDATE:
+                write_action_str = 'Updated'
+            case _:
+                write_action_str = 'Inserted'
+
         logger.debug(
-            '%sed %d rows in %s',
-            write_action.value.title(),
+            '%s %d rows in %s',
+            write_action_str,
             rows,
             table_spec.name
         )
