@@ -18,8 +18,8 @@ from .scrape import (
 from .database import (
     Table,
     WriteAction,
-    insert_to_db,
-    inserts_to_db
+    write_db,
+    writes_db
 )
 from .date import (
     get_season,
@@ -172,7 +172,7 @@ async def transform_from_schedule(
 
     logger.debug('Tabulation completed. Inserting to DB...')
 
-    rows = inserts_to_db(
+    rows = writes_db(
         items=[
             (venues, Table.VENUES, WriteAction.INSERT),
             (game_statuses, Table.GAME_STATUSES, WriteAction.INSERT),
@@ -259,7 +259,7 @@ async def transform_from_standings(
 
     logger.debug('Tabulation completed. Inserting to DB...')
 
-    rows = inserts_to_db(
+    rows = writes_db(
         items=[
             (conferences, Table.CONFERENCES, WriteAction.INSERT),
             (teams, Table.TEAMS, WriteAction.INSERT),
@@ -494,7 +494,7 @@ async def transform_from_game(
 
     logger.debug('Tabulation completed. Inserting to DB...')
 
-    rows = inserts_to_db(
+    rows = writes_db(
         items=[
             (teams, Table.TEAMS, WriteAction.UPDATE),
             (games, Table.GAMES, WriteAction.UPDATE),
@@ -555,7 +555,7 @@ async def transform_from_player(
         )
     )
 
-    rows = insert_to_db(
+    rows = write_db(
         players,
         Table.PLAYERS,
         conn,

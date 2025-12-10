@@ -70,7 +70,7 @@ def _get_insert_query(
     return query
 
 
-def _execute_insert_query(
+def _execute_write_query(
     df: pl.DataFrame,
     conn: sqlite3.Connection,
     query: str
@@ -90,7 +90,7 @@ def _execute_insert_query(
     return rows
 
 
-def insert_to_db(
+def write_db(
     df: pl.DataFrame,
     table: Table,
     conn: sqlite3.Connection,
@@ -140,7 +140,7 @@ def insert_to_db(
                 f'ON CONFLICT ({pk_str}) DO NOTHING;'
             )
 
-    rows = _execute_insert_query(df, conn, query)
+    rows = _execute_write_query(df, conn, query)
 
     if rows == -1:
         logger.debug('Failed to insert rows to %s', table_spec.name)
@@ -163,7 +163,7 @@ def insert_to_db(
     return rows
 
 
-def inserts_to_db(
+def writes_db(
     items: list[tuple[pl.DataFrame, Table, WriteAction]],
     conn: sqlite3.Connection,
 ) -> list[int]:
@@ -175,7 +175,7 @@ def inserts_to_db(
     rows = []
     for df, table, on_conflict in items:
         rows.append(
-            insert_to_db(
+            write_db(
                 df, table, conn,
                 write_action=on_conflict
             )
