@@ -1,6 +1,71 @@
+CREATE TABLE IF NOT EXISTS Venues (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    city VARCHAR,
+    state VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS Teams (
+    id INTEGER PRIMARY KEY,
+    location VARCHAR,
+    mascot VARCHAR,
+    abbrev VARCHAR,
+    color VARCHAR(6),
+    alt_color VARCHAR(6)
+);
+
+CREATE TABLE IF NOT EXISTS Conferences (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    abbrev VARCHAR NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ConferenceAlignments (
+    team_id INTEGER,
+    conference_id INTEGER,
+    season INTEGER,
+    PRIMARY KEY (team_id, conference_id, season),
+    FOREIGN KEY (team_id) REFERENCES Teams (id),
+    FOREIGN KEY (conference_id) REFERENCES Conferences (id)
+);
+
+CREATE TABLE IF NOT EXISTS PlayTypes (
+    id INTEGER PRIMARY KEY,
+    description VARCHAR,
+    is_shot BOOLEAN
+);
+
+CREATE TABLE IF NOT EXISTS Players (
+    id INTEGER PRIMARY KEY,
+    first_name VARCHAR,
+    last_name VARCHAR,
+    position VARCHAR(1),
+    height_ft INTEGER,
+    height_in INTEGER,
+    weight INTEGER,
+    birth_city VARCHAR,
+    birth_state VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS PlayerSeasons (
+    player_id INTEGER,
+    team_id INTEGER NOT NULL,
+    season INTEGER NOT NULL,
+    jersey INTEGER,
+    PRIMARY KEY (player_id, team_id, season),
+    FOREIGN KEY (player_id) REFERENCES Players (id),
+    FOREIGN KEY (team_id) REFERENCES Teams (id)
+);
+
+CREATE TABLE IF NOT EXISTS GameStatuses (
+    id INTEGER PRIMARY KEY,
+    state VARCHAR,
+    detail VARCHAR
+);
+
 CREATE TABLE IF NOT EXISTS Games (
     id INTEGER PRIMARY KEY,
-    datetime TEXT,
+    datetime DATETIME,
     home_id INTEGER NOT NULL,
     away_id INTEGER NOT NULL,
     venue_id INTEGER NOT NULL,
@@ -17,49 +82,11 @@ CREATE TABLE IF NOT EXISTS Games (
     FOREIGN KEY (status_id) REFERENCES GameStatuses (id)
 );
 
-CREATE TABLE IF NOT EXISTS GameStatuses (
-    id INTEGER PRIMARY KEY,
-    state TEXT,
-    detail TEXT
-);
-
-CREATE TABLE IF NOT EXISTS Venues (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    city TEXT,
-    state TEXT
-);
-
-CREATE TABLE IF NOT EXISTS Teams (
-    id INTEGER PRIMARY KEY,
-    location TEXT NOT NULL,
-    mascot TEXT NOT NULL,
-    -- not sure
-    abbrev TEXT NOT NULL,
-    color VARCHAR(6),
-    alt_color VARCHAR(6)
-);
-
-CREATE TABLE IF NOT EXISTS ConferenceAlignments (
-    team_id INTEGER,
-    conference_id INTEGER,
-    season INTEGER,
-    PRIMARY KEY (team_id, conference_id, season),
-    FOREIGN KEY (team_id) REFERENCES Teams (id),
-    FOREIGN KEY (conference_id) REFERENCES Conferences (id)
-);
-
-CREATE TABLE IF NOT EXISTS Conferences (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    abbrev TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS Plays (
     game_id INTEGER,
     sequence_id INTEGER,
     play_type_id INTEGER NOT NULL,
-    points_attempted INTEGER NOT NULL CHECK (points_attempted <= 3),
+    points_attempted INTEGER NOT NULL,
     is_score BOOLEAN NOT NULL,
     team_id INTEGER,
     player_id INTEGER,
@@ -71,7 +98,7 @@ CREATE TABLE IF NOT EXISTS Plays (
     away_score INTEGER CHECK (away_score >= 0),
     x_coord INTEGER,
     y_coord INTEGER,
-    timestamp TEXT,
+    timestamp DATETIME,
     PRIMARY KEY (game_id, sequence_id),
     FOREIGN KEY (game_id) REFERENCES Games (id),
     FOREIGN KEY (play_type_id) REFERENCES PlayTypes (id),
@@ -80,44 +107,15 @@ CREATE TABLE IF NOT EXISTS Plays (
     FOREIGN KEY (assist_id) REFERENCES Players (id)
 );
 
-CREATE TABLE IF NOT EXISTS PlayTypes (
-    id INTEGER PRIMARY KEY,
-    description TEXT,
-    is_shot BOOLEAN
-);
-
-CREATE TABLE IF NOT EXISTS Players (
-    id INTEGER PRIMARY KEY,
-    first_name TEXT NOT NULL,
-    last_name TEXT NOT NULL,
-    position VARCHAR(1),
-    height_ft INTEGER,
-    height_in INTEGER,
-    weight INTEGER,
-    birth_city TEXT,
-    birth_state TEXT
-);
-
-CREATE TABLE IF NOT EXISTS PlayerSeasons (
-    player_id INTEGER,
-    team_id INTEGER NOT NULL,
-    season INTEGER NOT NULL,
-    jersey INTEGER,
-    PRIMARY KEY (player_id, team_id, season),
-    FOREIGN KEY (player_id) REFERENCES Players (id),
-    FOREIGN KEY (team_id) REFERENCES Teams (id)
-);
-
 CREATE TABLE IF NOT EXISTS GameLogs (
     player_id INTEGER,
     game_id INTEGER,
     played BOOLEAN NOT NULL,
     started BOOLEAN NOT NULL,
     ejected BOOLEAN NOT NULL,
-    -- TODO: should there be stats here
     PRIMARY KEY (player_id, game_id),
     FOREIGN KEY (player_id) REFERENCES Players (id),
-    FOREIGN KEY (game_id) REFERENCES Teams (id)
+    FOREIGN KEY (game_id) REFERENCES Games (id)
 );
 
 -- FUTURE: AP Top 25 Ranking snapshots
