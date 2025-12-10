@@ -78,22 +78,30 @@ def _get_update_query(
     table_spec: _TableSpec
 ) -> str:
     '''Returns the update query based on the DataFrame.'''
-    update_set_spec = ', '.join(
-        f'{col} = df.{col}'
+    set_columns = [
+        col
         for col in df.columns
         if col not in table_spec.primary_key
+    ]
+    update_set_spec = ', '.join(
+        f'{col} = df.{col}'
+        for col in set_columns
     )
     update_pk_spec = ' AND '.join(
         f'{table_spec.name}.{col} = df.{col}'
-        for col in df.columns
-        if col in table_spec.primary_key
+        for col in table_spec.primary_key
     )
 
+    # for now, we avoid re-updating tables since DuckDB
+    # implicitly deletes them, causing issues whenever
+    # foreign keys are present. updates are only used when
+    # there is no existing value
     query = (
         f'UPDATE {table_spec.name}\n'
         f'SET {update_set_spec}\n'
         f'FROM df\n'
-        f'WHERE {update_pk_spec}\n;'
+        f'WHERE {update_pk_spec}\n'
+        f'AND {table_spec.name}.{set_columns[0]} IS NULL;'
     )
 
     return query
@@ -129,7 +137,6 @@ def write_db(
     Specify `on_conflict` to control conflict behavior.
     '''
     table_spec = table.value
-    logger.debug('Writing to %s', table_spec.name)
     insert_query = _get_insert_query(df, table_spec)
     pk_str = ', '.join(table_spec.primary_key)
 
@@ -233,7 +240,7 @@ def init_db(
         resp = ''
         while resp not in ('y', 'n'):
             usr_in = input(
-                f'Are you sure you want to drop all tables from {db_filename}? (Y/[N]) '
+                f'Are you sure you want to delete {db_filename}? (Y/[N]) '
             ).strip()
 
             resp = usr_in.lower()
