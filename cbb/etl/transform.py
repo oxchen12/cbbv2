@@ -72,7 +72,7 @@ async def transform_from_schedule(
 ) -> int:
     '''
     Extract data from the schedules for the given season.
-    Populates Games, Venues, Statuses.
+    Populates Venues, Teams, Games, GameStatuses.
     '''
     # TODO: consider making this function only grab one day's schedule
     #       this way, the `load` module will be able to control what days
@@ -338,8 +338,8 @@ async def transform_from_game(
 ) -> pl.DataFrame:
     '''
     Extract data from the game page.
-    Populates Plays, PlayTypes, Players, PlayerSeasons.
-    Updates Teams, Games.
+    Populates Plays, PlayTypes, Players, PlayerSeasons, GameLogs.
+    Updates Games.
     '''
     game_json_raw = await client.get_raw_game_json(game_id)
     attendance = game_json_raw['gameInfo']['attendance']
@@ -354,29 +354,16 @@ async def transform_from_game(
         for x in game_json_raw['boxscore']['players']
     )
 
-    teams = (
-        pl.from_dicts(competitors_raw)
-        .unnest('team', separator='_')
-        .unnest('team_groups', separator='_')
-        .select(
-            pl.col('id').cast(pl.Int64),
-            pl.col('team_color').alias('color'),
-            pl.col('team_alternateColor').alias('alt_color')
-        )
-    )
-
     games = (
         pl.from_dicts(competition_raw)
         .select(
             pl.col('id').cast(pl.Int64),
-            pl.col('date').str.to_date(
-                format='%Y-%m-%dT%H:%MZ').alias('datetime'),
-            pl.lit(home_id).cast(pl.Int64).alias('home_id'),
-            pl.lit(away_id).cast(pl.Int64).alias('away_id'),
             pl.col('neutralSite').alias('is_neutral_site'),
             pl.col('conferenceCompetition').alias('is_conference'),
             pl.col('shotChartAvailable').alias('has_shot_chart'),
-            pl.lit(attendance).alias('attendance')
+            pl.lit(attendance).alias('attendance'),
+            pl.col('date').str.to_date(
+                format='%Y-%m-%dT%H:%MZ').alias('datetime'),
         )
     )
 
@@ -522,7 +509,6 @@ async def transform_from_game(
 
     rows = writes_db(
         items=[
-            (teams, Table.TEAMS, WriteAction.UPDATE),
             (games, Table.GAMES, WriteAction.UPDATE),
             (play_types, Table.PLAY_TYPES, WriteAction.INSERT),
             (players, Table.PLAYERS, WriteAction.INSERT),
