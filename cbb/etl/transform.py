@@ -178,7 +178,9 @@ async def transform_from_standings(
     Extract data from the standings page for the given season.
     Populates Teams, Conferences, ConferenceAlignments.
     '''
-    validate_season(season)
+    if not validate_season(season):
+        logging.warning('Got invalid season: %d', season)
+        return -1
 
     standings_json_raw = await client.get_raw_standings_json(season)
     standings_content = standings_json_raw['page']['content']
