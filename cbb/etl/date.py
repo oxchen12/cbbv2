@@ -30,5 +30,4 @@ class InvalidSeasonError(ValueError):
 
 def validate_season(season: int) -> bool:
     '''Validates the season.'''
-    if not MIN_SEASON <= season <= MAX_SEASON:
-        raise InvalidSeasonError()
+    return MIN_SEASON <= season <= MAX_SEASON
