@@ -15,6 +15,8 @@ MAX_SEASON = get_season(dt.date.today())
 
 DEFAULT_SEASON_START = dt.date(MAX_SEASON, 11, 1)
 
+CALENDAR_DT_FORMAT = '%Y-%m-%dT%H:%MZ'
+
 
 class InvalidSeasonError(ValueError):
     '''Raised when a season is out of range.'''

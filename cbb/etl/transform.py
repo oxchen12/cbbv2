@@ -29,70 +29,22 @@ from .date import (
 
 logger = logging.getLogger(__name__)
 
-CALENDAR_DT_FORMAT = '%Y-%m-%dT%H:%MZ'
 SCHEDULE_KEEP = (
     'id', 'teams', 'date',
     'tbd', 'status', 'venue'
 )
 
 
-def _get_rep_dates(start: str,
-                   end: str) -> list[dt.date]:
-    '''
-    Get the necessary dates to fetch between start and end.
-    Assumes start and end are formatted like CALENDAR_DT_FORMAT.
-    '''
-    start_date = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
-    start_date = max(
-        start_date,
-        DEFAULT_SEASON_START.replace(year=start_date.year)
-    )
-    end_date = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
-    calendar = pl.date_range(
-        start_date,
-        end_date,
-        interval=dt.timedelta(days=1),
-        eager=True
-    )
-    # minimize pages to search by accessing schedules from
-    # adjacent dates
-    rep_dates = [
-        date
-        for i, date in enumerate(calendar)
-        if i % 3 == 1 or i == len(calendar) - 1
-    ]
-
-    return rep_dates
-
-
 async def transform_from_schedule(
     conn: duckdb.Connection,
     client: AsyncClient,
-    season: int
+    rep_date: dt.date
 ) -> int:
     '''
-    Extract data from the schedules for the given season.
+    Extract data from the schedules for the given (representative) date.
     Populates Venues, Teams, Games, GameStatuses.
     '''
-    # TODO: consider making this function only grab one day's schedule
-    #       this way, the `load` module will be able to control what days
-    #       are captured based on existing data in the database
-    validate_season(season)
-
-    # use one sync request to get calendar
-    season_start = DEFAULT_SEASON_START.replace(year=season)
-    init_schedule = get_raw_schedule_json(season_start)
-    season_json = init_schedule['page']['content']['season']
-    # the calendar field for some reason doesn't get every date
-    # so instead, we manually generate all dates from start to end
-    rep_dates = _get_rep_dates(
-        season_json['startDate'], season_json['endDate'])
-
-    tasks = [
-        client.get_raw_schedule_json(date)
-        for date in rep_dates
-    ]
-    schedule_results = await asyncio.gather(*tasks)
+    res = await client.get_raw_schedule_json(rep_date)
 
     events = [
         {
@@ -100,13 +52,12 @@ async def transform_from_schedule(
             for k, v in event.items()
             if k in SCHEDULE_KEEP
         }
-        for res in schedule_results
         for date in res['page']['content']['events'].values()
         for event in date
     ]
 
     if len(events) == 0:
-        logger.debug('No events found for %d', season)
+        logger.debug('No events found for %s', rep_date)
         return 0
 
     # TODO: consider moving all of these to external functions
