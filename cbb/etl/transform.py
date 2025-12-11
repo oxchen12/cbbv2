@@ -201,7 +201,16 @@ async def transform_from_standings(
         .lazy()
         .select(
             pl.col('name').alias('confName'),
-            'standings'
+            pl.col('standings'),
+            pl.col('children')
+        )
+        # `children` column here holds standings data for
+        # conferences with divisions, e.g. old Big East
+        .explode('children')
+        .unnest('children', separator='_')
+        .select(
+            'confName',
+            pl.coalesce('standings', 'children_standings')
         )
         .explode('standings')
         .unnest('standings')
