@@ -124,6 +124,20 @@ def _execute_write_query(
     return rows
 
 
+def _filter_null_primary_key(
+    df: pl.DataFrame,
+    table_spec: _TableSpec
+) -> pl.DataFrame:
+    '''Sanitizes the DataFrame of any null primary key rows.'''
+    return (
+        df
+        .filter(
+            pl.all_horizontal(
+                pl.col(table_spec.primary_key).is_not_null())
+        )
+    )
+
+
 def write_db(
     df: pl.DataFrame,
     table: Table,
@@ -160,6 +174,7 @@ def write_db(
                 f'ON CONFLICT ({pk_str}) DO NOTHING;'
             )
 
+    df = df.pipe(_filter_null_primary_key, table_spec)
     rows = _execute_write_query(df, conn, query)
 
     if rows == -1:
@@ -253,14 +268,14 @@ def init_db(
             resp = resp[0]
 
         if resp == 'y':
-            logger.debug('Dropping tables from %s', db_filename)
+            logger.debug('Deleting %s', db_filename)
             res = _delete_db(db_file)
             if res:
                 logger.debug(
-                    'Successfully dropped tables from %s', db_filename)
+                    'Successfully deleted %s', db_filename)
             else:
                 logger.debug(
-                    'Failed to drop tables from %s, aborting', db_filename)
+                    'Failed to delete %s, aborting', db_filename)
                 return None
         else:
             logger.debug('Using existing %s', db_filename)
