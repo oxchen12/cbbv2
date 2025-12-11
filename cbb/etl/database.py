@@ -184,6 +184,10 @@ def write_db(
     return rows
 
 
+def get_affected_rows(rows: list[int]):
+    return sum(r for r in rows if r >= 0)
+
+
 def writes_db(
     items: list[tuple[pl.DataFrame, Table, WriteAction]],
     conn: duckdb.Connection,
@@ -208,7 +212,7 @@ def writes_db(
         logger.debug(
             'Failed to insert to the following tables: %s', failed_tables)
 
-    success_rows = sum(x for x in rows if x >= 0)
+    success_rows = get_affected_rows(rows)
     logger.debug('Affected %s rows', success_rows)
 
     return rows
