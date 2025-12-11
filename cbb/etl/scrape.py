@@ -118,7 +118,7 @@ def get_standings_url(season: int | str) -> str:
 def get_schedule_url(date: dt.date):
     '''Get the url for the given date's schedule.'''
     date_str = date.strftime(SCHEDULE_DATE_FORMAT)
-    return SCHEDULE_TEMPLATE.format(date)
+    return SCHEDULE_TEMPLATE.format(date_str)
 
 
 def get_player_url(player_id: int | str) -> str:
@@ -158,8 +158,9 @@ class AsyncClient:
 
     MIN_MAX_CONCURRENTS = 1
     MAX_MAX_CONCURRENTS = 20
+    DEFAULT_MAX_CONCURRENTS = 10
 
-    def __init__(self, max_concurrents: int = 10):
+    def __init__(self, max_concurrents: int = DEFAULT_MAX_CONCURRENTS):
         if (
             max_concurrents < AsyncClient.MIN_MAX_CONCURRENTS
             or max_concurrents > AsyncClient.MAX_MAX_CONCURRENTS
