@@ -1,8 +1,9 @@
-'''
+"""
 This module provides functions for loading transformed
 data from ESPN into a local SQLite database.
-'''
-from typing import Callable
+"""
+from itertools import batched
+from typing import Collection, Any
 import asyncio
 import datetime as dt
 import logging
@@ -38,10 +39,10 @@ def _get_rep_dates(
     start: str,
     end: str
 ) -> list[dt.date]:
-    '''
+    """
     Get the necessary dates to fetch between start and end from schedules.
     Assumes start and end are formatted like CALENDAR_DT_FORMAT.
-    '''
+    """
     start_date = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
     start_date = max(
         start_date,
@@ -91,10 +92,9 @@ async def _load_season_range(
     start_season: int,
     end_season: int
 ) -> int:
-    '''
-    Generic function that collects load results
-    from multiple seasons.
-    '''
+    """
+    Load schedule data from the seasons in a given range.
+    """
     start_season, end_season = _fix_season_range(start_season, end_season)
 
     tasks = [
@@ -132,6 +132,9 @@ async def load_schedule(
     rep_dates = _get_rep_dates(
         season_json['startDate'], season_json['endDate'])
 
+    """
+    Load standings data for seasons between `start_season` and `end_season`.
+    """
     tasks = [
         transform_from_schedule(conn, client, rep_date)
         for rep_date in rep_dates
@@ -193,6 +196,10 @@ async def load_all(
 ) -> int:
     start_season, end_season = _fix_season_range(start_season, end_season)
     rows = []
+    """
+    Load all the data from `start_season` to `end_season`
+    into the database.
+    """
 
     tasks = [
         load_schedule_range(conn, client, start_season, end_season),

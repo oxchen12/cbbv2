@@ -1,6 +1,6 @@
-'''
+"""
 This module provides functions for scraping data from ESPN.
-'''
+"""
 from __future__ import annotations
 
 from typing import Any, TypeVar, Callable, Awaitable
@@ -52,7 +52,7 @@ def _is_fatal_http(e: aiohttp.ClientResponseError):
 
 def _get_resp(url: str,
               timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
-    '''Get the raw json from the API.'''
+    """Get the raw json from the API."""
     # TODO: retry handling
     logger.debug('Fetching from %s...', url)
     get_start = time.perf_counter()
@@ -95,7 +95,7 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 
 def _extract_json_from_url(url: str) -> dict[str, Any]:
-    '''Extract json data from HTML.'''
+    """Extract json data from HTML."""
     resp = _get_resp(url)
     return _extract_json(resp.text)
 
@@ -110,55 +110,55 @@ def _validate_season(season: int | str):
 
 
 def get_game_url(game_id: int | str) -> str:
-    '''Get the url for the given game_id.'''
+    """Get the url for the given game_id."""
     return GAME_API_TEMPLATE.format(game_id)
 
 
 def get_standings_url(season: int | str) -> str:
-    '''Get the url for the given season's standings.'''
+    """Get the url for the given season's standings."""
     return STANDINGS_TEMPLATE.format(season)
 
 
 def get_schedule_url(date: dt.date):
-    '''Get the url for the given date's schedule.'''
+    """Get the url for the given date's schedule."""
     date_str = date.strftime(SCHEDULE_DATE_FORMAT)
     return SCHEDULE_TEMPLATE.format(date_str)
 
 
 def get_player_url(player_id: int | str) -> str:
-    '''Get the url for the given player_id.'''
+    """Get the url for the given player_id."""
     return PLAYER_TEMPLATE.format(player_id)
 
 
 def get_raw_game_json(game_id: int | str) -> dict[str, Any]:
-    '''Get the raw json from the game page.'''
+    """Get the raw json from the game page."""
     url = get_game_url(game_id)
     return _get_resp(url).json()
 
 
 def get_raw_standings_json(season: int | str) -> dict[str, Any]:
-    '''Get the raw json from the standings page for a season.'''
+    """Get the raw json from the standings page for a season."""
     _validate_season(season)
     url = get_standings_url(season)
     return _extract_json_from_url(url)
 
 
 def get_raw_schedule_json(date: dt.date) -> dict[str, Any]:
-    '''
+    """
     Get the raw json from the schedule page for a given date.
-    '''
+    """
     url = get_schedule_url(date)
     return _extract_json_from_url(url)
 
 
 def get_raw_player_json(player_id: str | int) -> dict[str, Any]:
-    '''Get the raw json from the player page.'''
+    """Get the raw json from the player page."""
     url = get_player_url(player_id)
     return _extract_json_from_url(url)
 
 
 class AsyncClient:
-    '''Provides an interface for async scraping.'''
+    """Provides an interface for async scraping."""
 
     MIN_MAX_CONCURRENTS = 1
     MAX_MAX_CONCURRENTS = 20
@@ -194,7 +194,7 @@ class AsyncClient:
             self._session = None
 
     def check_session_exists(self) -> None:
-        '''Asserts whether the session has been initialized.'''
+        """Asserts whether the session has been initialized."""
         if self._session is None:
             raise RuntimeError(
                 'Client session not initialized. Use `async with`.')
@@ -212,10 +212,10 @@ class AsyncClient:
         url: str,
         processor: Callable[[aiohttp.ClientResponse], Awaitable[T]]
     ) -> T:
-        '''
+        """
         Get a request from the url and process the
         response using the `processor`.
-        '''
+        """
         self.check_session_exists()
         short_url = (
             url
@@ -235,7 +235,7 @@ class AsyncClient:
                 return await processor(resp)
 
     async def _extract_json_from_html(self, url: str) -> dict[str, Any]:
-        '''Extract json from HTML page.'''
+        """Extract json from HTML page."""
         async def process_json_from_html(resp: aiohttp.ClientResponse) -> dict[str, Any]:
             text = await resp.text(encoding='utf-8')
             return _extract_json(text)
@@ -243,7 +243,7 @@ class AsyncClient:
         return await self._fetch(url, process_json_from_html)
 
     async def _extract_as_json(self, url: str) -> dict[str, Any]:
-        '''Extract json from json page.'''
+        """Extract json from json page."""
         async def process_json(resp: aiohttp.ClientResponse) -> dict[str, Any]:
             return await resp.json()
 
@@ -253,7 +253,7 @@ class AsyncClient:
         self,
         game_id: int | str
     ) -> dict[str, Any]:
-        '''Get the raw json from the game page.'''
+        """Get the raw json from the game page."""
         url = get_game_url(game_id)
         return await self._extract_as_json(url)
 
@@ -261,7 +261,7 @@ class AsyncClient:
         self,
         season: int | str
     ) -> dict[str, Any]:
-        '''Get the raw json from the standings page for a season.'''
+        """Get the raw json from the standings page for a season."""
         _validate_season(season)
         url = get_standings_url(season)
         return await self._extract_json_from_html(url)
@@ -270,10 +270,10 @@ class AsyncClient:
         self,
         date: dt.date
     ) -> dict[str, Any]:
-        '''
+        """
         Get the raw json from the schedule page for a given date.
         A date `str` should be formatted as SCHEDULE_DATE_FORMAT.
-        '''
+        """
         url = get_schedule_url(date)
         return await self._extract_json_from_html(url)
 
@@ -281,6 +281,6 @@ class AsyncClient:
         self,
         player_id: int | str
     ) -> dict[str, Any]:
-        '''Get the raw json from the player page.'''
+        """Get the raw json from the player page."""
         url = get_player_url(player_id)
         return await self._extract_json_from_html(url)

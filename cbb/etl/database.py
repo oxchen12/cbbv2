@@ -1,7 +1,7 @@
-'''
+"""
 This module provides functions and classes for database
 operations within the parent module.
-'''
+"""
 from contextlib import closing
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -26,16 +26,16 @@ DB_FILE = DB_DIR / DB_FILENAME
 
 @dataclass(frozen=True)
 class _TableSpec:
-    '''Represents the specification for a table.'''
+    """Represents the specification for a table."""
     name: str
     primary_key: Sequence[str]
 
 
 class Table(Enum):
-    '''
+    """
     Abstraction for a SQL table.
     Includes table name and primary key.
-    '''
+    """
     GAMES = _TableSpec('Games', ['id'])
     GAME_STATUSES = _TableSpec('GameStatuses', ['id'])
     VENUES = _TableSpec('Venues', ['id'])
@@ -61,7 +61,7 @@ def _get_insert_query(
     df: pl.DataFrame,
     table_spec: _TableSpec,
 ) -> str:
-    '''Returns the template insert query based on the DataFrame.'''
+    """Returns the template insert query based on the DataFrame."""
     cols_spec = ', '.join(df.columns)
     dummy_spec = ', '.join(f'{col}' for col in df.columns)
     query = (
@@ -77,7 +77,7 @@ def _get_update_query(
     df: pl.DataFrame,
     table_spec: _TableSpec
 ) -> str:
-    '''Returns the update query based on the DataFrame.'''
+    """Returns the update query based on the DataFrame."""
     set_columns = [
         col
         for col in df.columns
@@ -112,7 +112,7 @@ def _execute_write_query(
     conn: duckdb.Connection,
     query: str
 ) -> int:
-    '''Executes the query on the connection.'''
+    """Executes the query on the connection."""
     try:
         res = conn.execute(query)
         rows = res.fetchone()[0]
@@ -128,7 +128,7 @@ def _filter_null_primary_key(
     df: pl.DataFrame,
     table_spec: _TableSpec
 ) -> pl.DataFrame:
-    '''Sanitizes the DataFrame of any null primary key rows.'''
+    """Sanitizes the DataFrame of any null primary key rows."""
     return (
         df
         .filter(
@@ -144,12 +144,10 @@ def write_db(
     conn: duckdb.Connection,
     write_action: WriteAction = WriteAction.INSERT
 ) -> int:
-    '''
-    Inserts the rows from the DataFrame into the specified table.
+    """
+    Performs a write action from the rows of the DataFrame into the table.
     Uses the names of the columns in the DataFrame to construct the query.
-
-    Specify `on_conflict` to control conflict behavior.
-    '''
+    """
     table_spec = table.value
     insert_query = _get_insert_query(df, table_spec)
     pk_str = ', '.join(table_spec.primary_key)
@@ -207,10 +205,10 @@ def writes_db(
     items: list[tuple[pl.DataFrame, Table, WriteAction]],
     conn: duckdb.Connection,
 ) -> list[int]:
-    '''
+    """
     Inserts multiple DataFrames into the specified tables.
     Returns the number of affected rows.
-    '''
+    """
     logger.debug('Writing tables...')
     rows = []
     for df, table, on_conflict in items:
@@ -234,7 +232,7 @@ def writes_db(
 
 
 def _delete_db(db_file: Path) -> bool:
-    '''Deletes the existing database file.'''
+    """Deletes the existing database file."""
     try:
         db_file.unlink()
         return True
@@ -248,11 +246,12 @@ def init_db(
     erase: bool = False
 ) -> str:
     '''
+    """
     (Re-)initializes the database file.
     If `erase` is True and file exists, erases the old database.
 
-    Returns the uri of the database.
-    '''
+    Returns the uri of the database or None if not successful.
+    """
     db_file = Path(uri)
     db_filename = db_file.name
     if erase and db_file.exists():

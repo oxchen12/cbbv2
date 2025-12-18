@@ -1,7 +1,7 @@
-'''
+"""
 This module contains utility functions for dealing with
 CBB season dates.
-'''
+"""
 import datetime as dt
 
 
@@ -19,7 +19,7 @@ CALENDAR_DT_FORMAT = '%Y-%m-%dT%H:%MZ'
 
 
 class InvalidSeasonError(ValueError):
-    '''Raised when a season is out of range.'''
+    """Raised when a season is out of range."""
 
     def __init__(
         self,
@@ -29,5 +29,5 @@ class InvalidSeasonError(ValueError):
 
 
 def validate_season(season: int) -> bool:
-    '''Validates the season.'''
+    """Validates the season."""
     return MIN_SEASON <= season <= MAX_SEASON

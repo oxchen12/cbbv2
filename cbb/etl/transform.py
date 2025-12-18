@@ -1,7 +1,8 @@
-'''
+"""
 This module provides functions for transforming raw data
 from ESPN into pl.DataFrames.
-'''
+"""
+from contextlib import AbstractAsyncContextManager, nullcontext
 from typing import Any
 import asyncio
 import datetime as dt
@@ -40,10 +41,10 @@ async def transform_from_schedule(
     client: AsyncClient,
     rep_date: dt.date
 ) -> int:
-    '''
+    """
     Extract data from the schedules for the given (representative) date.
     Populates Venues, Teams, Games, GameStatuses.
-    '''
+    """
     res = await client.get_raw_schedule_json(rep_date)
 
     events = [
@@ -174,10 +175,10 @@ async def transform_from_standings(
     client: AsyncClient,
     season: int
 ) -> int:
-    '''
+    """
     Extract data from the standings page for the given season.
     Populates Teams, Conferences, ConferenceAlignments.
-    '''
+    """
     if not validate_season(season):
         logging.warning('Got invalid season: %d', season)
         return -1
@@ -299,10 +300,11 @@ async def transform_from_game(
     game_id: int
 ) -> pl.DataFrame:
     '''
+    """
     Extract data from the game page.
     Populates Plays, PlayTypes, Players, PlayerSeasons, GameLogs.
     Updates Games.
-    '''
+    """
     game_json_raw = await client.get_raw_game_json(game_id)
     attendance = game_json_raw['gameInfo']['attendance']
     competition_raw = game_json_raw['header']['competitions'][0]
@@ -489,10 +491,10 @@ async def transform_from_player(
     client: AsyncClient,
     player_id: int
 ) -> int:
-    '''
+    """
     Extract data from the player page.
     Updates Players.
-    '''
+    """
     player_raw = await client.get_raw_player_json(player_id)
     athlete = player_raw['page']['content']['player']['plyrHdr']['ath']
 
