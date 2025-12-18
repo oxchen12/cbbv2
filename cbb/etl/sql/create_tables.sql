@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS Players (
     id INTEGER PRIMARY KEY,
     first_name VARCHAR,
     last_name VARCHAR,
-    position VARCHAR(1),
+    position VARCHAR,
     height_ft INTEGER,
     height_in INTEGER,
     weight INTEGER,
@@ -69,10 +69,10 @@ CREATE TABLE IF NOT EXISTS Games (
     datetime DATETIME,
     home_id INTEGER NOT NULL,
     away_id INTEGER NOT NULL,
-    venue_id INTEGER NOT NULL,
+    venue_id INTEGER,
     -- not sure 
     status_id INTEGER NOT NULL,
-    tbd BOOLEAN NOT NULL,
+    tbd BOOLEAN,
     is_neutral_site BOOLEAN,
     is_conference BOOLEAN,
     has_shot_chart BOOLEAN,
@@ -105,8 +105,8 @@ CREATE TABLE IF NOT EXISTS Plays (
     FOREIGN KEY (game_id) REFERENCES Games (id),
     FOREIGN KEY (play_type_id) REFERENCES PlayTypes (id),
     FOREIGN KEY (team_id) REFERENCES Teams (id),
-    FOREIGN KEY (player_id) REFERENCES Players (id),
-    FOREIGN KEY (assist_id) REFERENCES Players (id)
+    -- FOREIGN KEY (player_id) REFERENCES Players (id),
+    -- FOREIGN KEY (assist_id) REFERENCES Players (id)
 );
 
 CREATE TABLE IF NOT EXISTS GameLogs (
