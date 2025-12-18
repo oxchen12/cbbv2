@@ -37,7 +37,7 @@ SCHEDULE_KEEP = (
 
 
 async def transform_from_schedule(
-    conn: duckdb.Connection,
+    conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     rep_date: dt.date
 ) -> int:
@@ -171,7 +171,7 @@ async def transform_from_schedule(
 
 
 async def transform_from_standings(
-    conn: duckdb.Connection,
+    conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     season: int
 ) -> int:
@@ -295,11 +295,10 @@ def _transform_box(json_raw: dict[str, Any],
 
 
 async def transform_from_game(
-    conn: duckdb.Connection,
+    conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     game_id: int
-) -> pl.DataFrame:
-    '''
+) -> int:
     """
     Extract data from the game page.
     Populates Plays, PlayTypes, Players, PlayerSeasons, GameLogs.
@@ -487,7 +486,7 @@ async def transform_from_game(
 
 
 async def transform_from_player(
-    conn: duckdb.Connection,
+    conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     player_id: int
 ) -> int:

@@ -87,6 +87,7 @@ def _fix_season_range(
 
 async def _load_season_range(
     conn: duckdb.Connection,
+    conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     func: Callable,
     start_season: int,
@@ -112,6 +113,7 @@ async def _load_season_range(
 
 async def load_schedule(
     conn: duckdb.Connection,
+    conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     season: int
 ) -> int:
@@ -158,6 +160,7 @@ async def load_schedule_range(
     '''
     return await _load_season_range(
         conn, client, load_schedule, start_season, end_season
+    conn: duckdb.DuckDBPyConnection,
     )
 
 
@@ -179,6 +182,7 @@ async def load_standings(
 
 async def load_standings_range(
     conn: duckdb.Connection,
+    conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     start_season: int = MIN_SEASON,
     end_season: int = MAX_SEASON
@@ -189,7 +193,7 @@ async def load_standings_range(
 
 
 async def load_all(
-    conn: duckdb.Connect,
+    conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     start_season: int = MIN_SEASON,
     end_season: int = MAX_SEASON
