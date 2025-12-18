@@ -13,6 +13,7 @@ import time
 
 from bs4 import BeautifulSoup
 import aiohttp
+import backoff
 import requests
 
 from .date import (
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar('T')
 
 # TODO: implement switching to women's, perhaps with a module manager
+# URLs
 API_PREFIX = (
     'https://site.web.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball'
 )
@@ -45,6 +47,8 @@ DEFAULT_HEADERS = {
 # dates
 SCHEDULE_DATE_FORMAT = '%Y%m%d'
 
+def _is_fatal_http(e: aiohttp.ClientResponseError):
+    return 400 <= e.status < 500
 
 def _get_resp(url: str,
               timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
@@ -160,6 +164,8 @@ class AsyncClient:
     MAX_MAX_CONCURRENTS = 20
     DEFAULT_MAX_CONCURRENTS = 10
 
+    SLEEP_TIME = 0.1
+
     def __init__(self, max_concurrents: int = DEFAULT_MAX_CONCURRENTS):
         if (
             max_concurrents < AsyncClient.MIN_MAX_CONCURRENTS
@@ -176,7 +182,7 @@ class AsyncClient:
             self._session = aiohttp.ClientSession(
                 headers=DEFAULT_HEADERS,
                 # TODO: error logic
-                raise_for_status=False
+                raise_for_status=True
             )
 
         return self
@@ -193,6 +199,14 @@ class AsyncClient:
             raise RuntimeError(
                 'Client session not initialized. Use `async with`.')
 
+    @backoff.on_exception(
+        backoff.expo,
+        aiohttp.ClientResponseError,
+        giveup=_is_fatal_http,
+        max_tries=5,
+        max_time=60,
+        factor=2
+    )
     async def _fetch(
         self,
         url: str,
@@ -209,21 +223,16 @@ class AsyncClient:
             .removeprefix(WEB_PREFIX)
         )
 
-        # TODO: retry handling
         logger.debug('Fetching from %s...', short_url)
-        get_start = time.perf_counter()
-        async with (
-            self._semaphore,
-            self._session.get(url) as resp
-        ):
-            # TODO: error handling
-            get_end = time.perf_counter() - get_start
-            logger.debug('Got %d (%.2fs) from %s',
-                         resp.status, get_end, short_url)
-            if resp.status != 200:
-                pass
+        async with self._semaphore:
+            get_start = time.perf_counter()
+            async with self._session.get(url) as resp:
+                get_end = time.perf_counter() - get_start
+                logger.debug('Got %d (%.2fs) from %s',
+                             resp.status, get_end, short_url)
 
-            return await processor(resp)
+                await asyncio.sleep(AsyncClient.SLEEP_TIME)
+                return await processor(resp)
 
     async def _extract_json_from_html(self, url: str) -> dict[str, Any]:
         '''Extract json from HTML page.'''
