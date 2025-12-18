@@ -83,6 +83,8 @@ def _get_update_query(
         for col in df.columns
         if col not in table_spec.primary_key
     ]
+    if len(set_columns) == 0:
+        return ''
     update_set_spec = ', '.join(
         f'{col} = df.{col}'
         for col in set_columns
@@ -118,7 +120,6 @@ def _execute_write_query(
         rows = res.fetchone()[0]
     except duckdb.Error as e:
         logger.debug('An error occurred during query execution: %s', e)
-        logger.debug(query)
         rows = -1
 
     return rows
@@ -152,39 +153,40 @@ def write_db(
     insert_query = _get_insert_query(df, table_spec)
     pk_str = ', '.join(table_spec.primary_key)
 
-    match write_action:
-        case WriteAction.UPSERT:
-            upsert_set_spec = ',\n'.join(
-                f'\t{col}=EXCLUDED.{col}'
-                for col in df.columns
-                if col not in table_spec.primary_key
-            )
-            query = (
-                f'{insert_query}\n'
-                f'ON CONFLICT ({pk_str}) DO UPDATE SET\n'
-                f'{upsert_set_spec};'
-            )
-        case WriteAction.UPDATE:
-            query = _get_update_query(df, table_spec)
-        case _:
-            query = (
-                f'{insert_query}\n'
-                f'ON CONFLICT ({pk_str}) DO NOTHING;'
-            )
+    if write_action == WriteAction.UPSERT:
+        upsert_set_spec = ',\n'.join(
+            f'\t{col}=EXCLUDED.{col}'
+            for col in df.columns
+            if col not in table_spec.primary_key
+        )
+        query = (
+            f'{insert_query}\n'
+            f'ON CONFLICT ({pk_str}) DO UPDATE SET\n'
+            f'{upsert_set_spec};'
+        )
+    elif write_action == WriteAction.UPDATE:
+        query = _get_update_query(df, table_spec)
+        if query == '':
+            logger.info('No rows to update, skipping')
+            return 0
+    else:
+        query = (
+            f'{insert_query}\n'
+            f'ON CONFLICT ({pk_str}) DO NOTHING;'
+        )
 
     df = df.pipe(_filter_null_primary_key, table_spec)
     rows = _execute_write_query(df, conn, query)
 
     if rows == -1:
         logger.debug('Failed to insert rows to %s', table_spec.name)
-    else:
-        match write_action:
-            case WriteAction.UPSERT:
-                write_action_str = 'Upserted'
-            case WriteAction.UPDATE:
-                write_action_str = 'Updated'
-            case _:
-                write_action_str = 'Inserted'
+    elif trace:
+        if write_action == WriteAction.UPSERT:
+            write_action_str = 'Upserted'
+        elif write_action == WriteAction.UPDATE:
+            write_action_str = 'Updated'
+        else:
+            write_action_str = 'Inserted'
 
         logger.debug(
             '%s %d rows (of %d) in %s',
