@@ -111,7 +111,7 @@ def _get_update_query(
 
 def _execute_write_query(
     df: pl.DataFrame,
-    conn: duckdb.Connection,
+    conn: duckdb.DuckDBPyConnection,
     query: str
 ) -> int:
     """Executes the query on the connection."""
@@ -142,8 +142,9 @@ def _filter_null_primary_key(
 def write_db(
     df: pl.DataFrame,
     table: Table,
-    conn: duckdb.Connection,
-    write_action: WriteAction = WriteAction.INSERT
+    conn: duckdb.DuckDBPyConnection,
+    write_action: WriteAction = WriteAction.INSERT,
+    trace: bool = False
 ) -> int:
     """
     Performs a write action from the rows of the DataFrame into the table.
@@ -205,7 +206,7 @@ def get_affected_rows(rows: list[int]):
 
 def writes_db(
     items: list[tuple[pl.DataFrame, Table, WriteAction]],
-    conn: duckdb.Connection,
+    conn: duckdb.DuckDBPyConnection,
 ) -> list[int]:
     """
     Inserts multiple DataFrames into the specified tables.
@@ -238,7 +239,7 @@ def _delete_db(db_file: Path) -> bool:
     try:
         db_file.unlink()
         return True
-    except PermissionError as e:
+    except PermissionError:
         logger.debug('Another process is using %s, aborting', db_file.name)
         return False
 
@@ -246,8 +247,7 @@ def _delete_db(db_file: Path) -> bool:
 def init_db(
     uri: str | Path = DB_FILE,
     erase: bool = False
-) -> str:
-    '''
+) -> Path | None:
     """
     (Re-)initializes the database file.
     If `erase` is True and file exists, erases the old database.
