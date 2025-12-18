@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS Players (
     height_in INTEGER,
     weight INTEGER,
     birth_city VARCHAR,
-    birth_state VARCHAR
+    birth_state VARCHAR,
+    complete_record BOOLEAN
 );
 
 CREATE TABLE IF NOT EXISTS PlayerSeasons (
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS Games (
     is_conference BOOLEAN,
     has_shot_chart BOOLEAN,
     attendance INTEGER,
+    complete_record BOOLEAN,
     FOREIGN KEY (home_id) REFERENCES Teams (id),
     FOREIGN KEY (away_id) REFERENCES Teams (id),
     FOREIGN KEY (venue_id) REFERENCES Venues (id),
