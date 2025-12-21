@@ -31,3 +31,11 @@ class InvalidSeasonError(ValueError):
 def validate_season(season: int) -> bool:
     """Validates the season."""
     return MIN_SEASON <= season <= MAX_SEASON
+
+
+def get_season_start(season: int) -> dt.date:
+    """Get the start date of the season."""
+    return (
+        DEFAULT_SEASON_START
+        .replace(year=season-1)
+    )
