@@ -21,6 +21,9 @@ from .date import (
 )
 
 logger = logging.getLogger(__name__)
+exclude_loggers = ('_log_backoff', '_log_giveup')
+for name in exclude_loggers:
+    logging.getLogger(name).disabled = True
 T = TypeVar('T')
 
 # TODO: implement switching to women's, perhaps with a module manager
@@ -47,8 +50,11 @@ DEFAULT_HEADERS = {
 # dates
 SCHEDULE_DATE_FORMAT = '%Y%m%d'
 
-def _is_fatal_http(e: aiohttp.ClientResponseError):
-    return 400 <= e.status < 500
+def is_non_transient(code: int) -> bool:
+    return 400 <= code < 500
+
+def _is_giveup_http(e: aiohttp.ClientResponseError) -> bool:
+    return is_non_transient(e.status)
 
 def _get_resp(url: str,
               timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
@@ -202,7 +208,8 @@ class AsyncClient:
     @backoff.on_exception(
         backoff.expo,
         aiohttp.ClientResponseError,
-        giveup=_is_fatal_http,
+        giveup=_is_giveup_http,
+        raise_on_giveup=True,
         max_tries=5,
         max_time=60,
         factor=2
