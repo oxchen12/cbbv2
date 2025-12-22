@@ -35,6 +35,100 @@ SCHEDULE_KEEP = (
     'tbd', 'status', 'venue'
 )
 
+_VENUES_SCHEMA = {
+    'id': pl.Int64,
+    'name': pl.String,
+    'city': pl.String,
+    'state': pl.String
+}
+
+_PLAYS_INTER_SCHEMA = {
+    'game_id': pl.Int64,
+    'sequence_id': pl.Int64,
+    'text': pl.String,
+    'description': pl.String,
+    'play_type_id': pl.Int64,
+    'play_type_text': pl.String,
+    'is_shot': pl.Boolean,
+    'points_attempted': pl.Int64,
+    'is_score': pl.Boolean,
+    'team_id': pl.Int64,
+    'player_id': pl.Int64,
+    'assist_id': pl.Int64,
+    'period': pl.Int64,
+    'period_display': pl.String,
+    'clock_minutes': pl.Int64,
+    'clock_seconds': pl.Int64,
+    'away_score': pl.Int64,
+    'home_score': pl.Int64,
+    'x_coord': pl.Int64,
+    'y_coord': pl.Int64,
+    'timestamp': pl.Datetime
+}
+
+_BOX_SCHEMA = {
+    'id': pl.Int64,
+    'first_name': pl.String,
+    'last_name': pl.String,
+    'position': pl.String,
+    'started': pl.Boolean,
+    'played': pl.Boolean,
+    'ejected': pl.Boolean,
+    'jersey': pl.Int64,
+    'team_id': pl.Int64
+}
+
+_GAMES_SCHEMA = {
+    'id': pl.Int64,
+    'is_neutral_site': pl.Boolean,
+    'is_conference': pl.Boolean,
+    'has_shot_char': pl.Boolean,
+    'attendance': pl.Int64,
+    'datetime': pl.Datetime,
+    'complete_record': pl.Boolean
+}
+
+
+def _col_if_exists(name: str, *more_names: str) -> pl.Expr:
+    """
+    Selector for an optional column.
+    Returns an empty selector if the column does not exist.
+    """
+    return cs.matches(f'^{"|".join([name, *more_names])}$')
+
+def _with_default_col(
+    df: pl.DataFrame | pl.LazyFrame,
+    name: str,
+    default: pl.Expr
+) -> pl.DataFrame | pl.LazyFrame:
+    if isinstance(df, pl.LazyFrame):
+        columns = df.collect_schema().names()
+    else:
+        columns = df.columns
+
+    if name in columns:
+        return df
+    return df.with_columns(default.alias(name))
+
+
+def _empty_df_with_schema(schema: dict[str, pl.DataType]) -> pl.DataFrame:
+    return pl.DataFrame([], schema=schema)
+
+
+def _nested_get(
+    data: dict[Any, Any] | Any,
+    *keys,
+    default: Any = None
+) -> Any:
+    """.get a nested attribute from the dict."""
+    cur = data
+    for key in keys:
+        if key in cur:
+            cur = cur[key]
+        else:
+            return default
+    return cur
+
 
 async def transform_from_schedule(
     conn: duckdb.DuckDBPyConnection,
@@ -69,21 +163,26 @@ async def transform_from_schedule(
             pl.col('id').cast(pl.Int64),
             pl.col('date')
             .str.to_datetime(time_zone='UTC').alias('datetime'),
-            'tbd', 'teams', 'venue', 'status'
+            'tbd',
+            'teams',
+            _col_if_exists('venue'),
+            'status'
         )
     )
 
-    venues = (
-        games_inter
-        .select(pl.col('venue').struct.unnest())
-        .unnest('address')
-        .select(
-            pl.col('id').cast(pl.Int64),
-            pl.col('fullName').alias('name'),
-            'city', 'state'
+    venues = _empty_df_with_schema(_VENUES_SCHEMA)
+    if 'venue' in games_inter.collect_schema().names():
+        venues = (
+            games_inter
+            .select(pl.col('venue').struct.unnest())
+            .select(
+                pl.col('id').cast(pl.Int64),
+                pl.col('fullName').alias('name'),
+                _col_if_exists('address').struct.field('city'),
+                _col_if_exists('address').struct.field('state')
+            )
+            .collect()
         )
-        .collect()
-    )
 
     # TODO: fix detail values
     game_statuses = (
@@ -113,8 +212,8 @@ async def transform_from_schedule(
             'location',
             pl.col('shortDisplayName').alias('mascot'),
             'abbrev',
-            pl.col('teamColor').alias('color'),
-            pl.col('altColor').alias('alt_color')
+            _col_if_exists('teamColor').alias('color'),
+            _col_if_exists('altColor').alias('alt_color')
         )
         .collect()
     )
@@ -124,7 +223,7 @@ async def transform_from_schedule(
         .with_columns(
             pl.col('teams').list.to_struct(fields=['home', 'away']),
             (
-                pl.col('venue')
+                _col_if_exists('venue')
                 .struct.field('id')
                 .cast(pl.Int64)
                 .alias('venue_id')
@@ -197,25 +296,51 @@ async def transform_from_standings(
         )
     )
 
-    teams_confs = (
+    def _extract_team(lf: pl.LazyFrame) -> pl.LazyFrame:
+        """Extracts the team columns from the standings."""
+        return (
+            lf
+            .filter(pl.col('standings').is_not_null())
+            .explode('standings')
+            .unnest('standings')
+            .unnest('team')
+        )
+
+    teams_confs_base = (
         pl.from_dicts(standings_content['standings']['groups']['groups'])
         .lazy()
         .select(
             pl.col('name').alias('confName'),
             pl.col('standings'),
-            pl.col('children')
+            _col_if_exists('children')
         )
-        # `children` column here holds standings data for
-        # conferences with divisions, e.g. old Big East
-        .explode('children')
-        .unnest('children', separator='_')
-        .select(
-            'confName',
-            pl.coalesce('standings', 'children_standings')
+    )
+
+    teams_confs_no_div = (
+        teams_confs_base
+        .select('confName', 'standings')
+        .pipe(_extract_team)
+    )
+
+    # hack to get initialize with an empty LazyFrame
+    teams_confs_div = teams_confs_no_div.limit(0)
+    if 'children' in teams_confs_base.collect_schema().names():
+        teams_confs_div = (
+            teams_confs_base
+            .explode('children')
+            .select(
+                'confName',
+                pl.col('children')
+                .struct.field('standings')
+            )
+            .pipe(_extract_team)
         )
-        .explode('standings')
-        .unnest('standings')
-        .unnest('team')
+
+    teams_confs = (
+        pl.concat(
+            [teams_confs_no_div, teams_confs_div],
+            how='diagonal_relaxed'
+        )
         .join(
             conferences
             .lazy()
@@ -265,8 +390,15 @@ async def transform_from_standings(
 
 
 def _transform_box(json_raw: dict[str, Any],
-                   team_id: int) -> pl.DataFrame:
-    return (
+                   team_id: int) -> pl.LazyFrame:
+    box = _empty_df_with_schema(_BOX_SCHEMA).lazy()
+    if (
+        len(_nested_get(json_raw, 'athletes')) == 0
+        or 'id' not in json_raw['athletes']
+    ):
+        return box
+
+    box = (
         pl.from_dicts(json_raw['athletes'])
         .lazy()
         .unnest('athlete')
@@ -288,10 +420,49 @@ def _transform_box(json_raw: dict[str, Any],
             pl.col('starter').alias('started'),
             ~pl.col('didNotPlay').alias('played'),
             'ejected',
-            pl.col('jersey').cast(pl.Int64),
+            _col_if_exists('jersey').cast(pl.Int64),
             pl.lit(team_id).alias('team_id')
         )
     )
+    if 'jersey' not in box.collect_schema().names():
+        box = (
+            box
+            .with_columns(
+                pl.lit(None, dtype=pl.Int64).alias('jersey')
+            )
+            .select(list(_BOX_SCHEMA.keys()))
+        )
+    return box
+
+
+def _get_players_inter(game_json_raw: dict[str, Any]) -> pl.LazyFrame:
+    if _nested_get(game_json_raw, 'boxscore', 'players') is None:
+        return _empty_df_with_schema(_BOX_SCHEMA).lazy()
+
+    away_id, home_id = (
+        int(x['team']['id'])
+        for x in game_json_raw['boxscore']['players']
+    )
+    away_box_raw, home_box_raw = (
+        x['statistics'][0]
+        for x in game_json_raw['boxscore']['players']
+    )
+
+    try:
+        players_inter = pl.concat(
+            [
+                _transform_box(away_box_raw, away_id),
+                _transform_box(home_box_raw, home_id)
+            ],
+            how='vertical_relaxed'
+        )
+        players_inter.collect()
+    except pl.exceptions.PolarsError as e:
+        logger.debug(_transform_box(away_box_raw, away_id).collect())
+        logger.debug(_transform_box(home_box_raw, home_id).collect())
+        raise e
+
+    return players_inter
 
 
 async def transform_from_game(
@@ -305,97 +476,107 @@ async def transform_from_game(
     Updates Games.
     """
     game_json_raw = await client.get_raw_game_json(game_id)
-    attendance = game_json_raw['gameInfo']['attendance']
-    competition_raw = game_json_raw['header']['competitions'][0]
-    competitors_raw = competition_raw.pop('competitors')
-    away_id, home_id = (
-        int(x['team']['id'])
-        for x in game_json_raw['boxscore']['players']
-    )
-    away_box_raw, home_box_raw = (
-        x['statistics'][0]
-        for x in game_json_raw['boxscore']['players']
-    )
+    if game_json_raw is None:
+        logger.warning('Couldn\'t get results for game id %d', game_id)
+        return -1
+    attendance = _nested_get(game_json_raw, 'gameInfo', 'attendance')
+    competition_raw = _nested_get(game_json_raw, 'header', 'competitions')
 
-    games = (
-        pl.from_dicts(competition_raw)
-        .select(
-            pl.col('id').cast(pl.Int64),
-            pl.col('neutralSite').alias('is_neutral_site'),
-            pl.col('conferenceCompetition').alias('is_conference'),
-            pl.col('shotChartAvailable').alias('has_shot_chart'),
-            pl.lit(attendance).alias('attendance'),
-            pl.col('date').str.to_date(
-                format='%Y-%m-%dT%H:%MZ').alias('datetime'),
+    games = _empty_df_with_schema(_GAMES_SCHEMA)
+    if competition_raw is not None:
+        games = (
+            pl.from_dicts(competition_raw)
+            .select(
+                pl.col('id').cast(pl.Int64),
+                _col_if_exists('neutralSite').alias('is_neutral_site'),
+                _col_if_exists('conferenceCompetition').alias('is_conference'),
+                _col_if_exists('shotChartAvailable').alias('has_shot_chart'),
+                pl.lit(attendance).alias('attendance'),
+                pl.col('date')
+                .cast(pl.String)
+                .str.to_date(
+                    format='%Y-%m-%dT%H:%MZ').alias('datetime'),
+                pl.lit(True).alias('complete_record')
+            )
         )
-    )
 
-    plays_inter = (
-        pl.from_dicts(game_json_raw['plays'])
-        .lazy()
-        .unnest(
-            'type',
-            'period',
-            'clock',
-            'coordinate',
-            'team',
-            separator='_'
-        )
-        .with_columns(
-            pl.col('clock_displayValue').str.split(':')
-        )
-        .with_columns(
-            game_id=pl.lit(game_id),
-            player_id=(
-                pl.col('participants')
-                .list.first()
-                .struct.field('*')
-                .struct.field('*')
-                .cast(pl.Int64)
-            ),
-            assist_id=(
-                pl.when(pl.col('participants').list.len().gt(1))
-                .then(
-                    pl.col('participants')
-                    .list.last()
-                    .struct.field('*')
-                    .struct.field('*')
+    plays_inter = _empty_df_with_schema(_PLAYS_INTER_SCHEMA).lazy()
+    plays_raw = game_json_raw.get('plays', None)
+    if (
+        plays_raw is not None
+        and len(plays_raw) > 0
+    ):
+        plays_inter = (
+            pl.from_dicts(plays_raw)
+            .lazy()
+            .unnest(
+                'type',
+                'period',
+                'clock',
+                _col_if_exists('coordinate'),
+                _col_if_exists('team'),
+                separator='_'
+            )
+            .with_columns(
+                pl.col('clock_displayValue').str.split(':')
+            )
+            .with_columns(
+                _col_if_exists('coordinate_x').alias('x_coord'),
+                _col_if_exists('coordinate_y').alias('y_coord'),
+                _col_if_exists('wallclock').cast(pl.Datetime),
+                _col_if_exists('team_id').cast(pl.Int64),
+                game_id=pl.lit(game_id),
+                player_id=(
+                    _col_if_exists('participants')
+                    .list.first()
+                    .struct.unnest()
+                    .struct.unnest()
                     .cast(pl.Int64)
+                ),
+                assist_id=(
+                    pl.when(_col_if_exists('participants').list.len().gt(1))
+                    .then(
+                        _col_if_exists('participants')
+                        .list.last()
+                        .struct.unnest()
+                        .struct.unnest()
+                        .cast(pl.Int64)
+                    )
+                    .otherwise(None)
+                ),
+                period=pl.col('period_number'),
+                period_display=pl.col('period_displayValue'),
+                sequence_id=pl.col('sequenceNumber').cast(pl.Int64),
+                play_type_id=pl.col('type_id').cast(pl.Int64),
+                play_type_text=pl.col('type_text'),
+                clock_minutes=pl.col(
+                    'clock_displayValue').list.get(0).cast(pl.Int64),
+                clock_seconds=pl.col(
+                    'clock_displayValue').list.get(1).cast(pl.Int64),
+                description=pl.col('shortDescription'),
+                away_score=pl.col('awayScore'),
+                home_score=pl.col('homeScore'),
+                is_shot=pl.col('shootingPlay'),
+                is_score=pl.col('scoringPlay'),
+                points_attempted=pl.col('pointsAttempted')
+            )
+            .select(
+                'game_id', 'sequence_id', 'text',
+                'description', 'play_type_id', 'play_type_text',
+                'is_shot', 'points_attempted', 'is_score',
+                'period', 'period_display',
+                'clock_minutes', 'clock_seconds',
+                'away_score', 'home_score',
+                _col_if_exists(
+                    'x_coord',
+                    'y_coord',
+                    'timestamp',
+                    'team_id',
+                    'player_id',
+                    'assist_id'
                 )
-                .otherwise(None)
-            ),
-            period=pl.col('period_number'),
-            period_display=pl.col('period_displayValue'),
-            sequence_id=pl.col('sequenceNumber').cast(pl.Int64),
-            play_type_id=pl.col('type_id').cast(pl.Int64),
-            play_type_text=pl.col('type_text'),
-            team_id=pl.col('team_id').cast(pl.Int64),
-            x_coord=pl.col('coordinate_x'),
-            y_coord=pl.col('coordinate_y'),
-            clock_minutes=pl.col(
-                'clock_displayValue').list.get(0).cast(pl.Int64),
-            clock_seconds=pl.col(
-                'clock_displayValue').list.get(1).cast(pl.Int64),
-            description=pl.col('shortDescription'),
-            away_score=pl.col('awayScore'),
-            home_score=pl.col('homeScore'),
-            is_shot=pl.col('shootingPlay'),
-            is_score=pl.col('scoringPlay'),
-            points_attempted=pl.col('pointsAttempted'),
-            timestamp=pl.col('wallclock').cast(pl.Datetime)
+            )
         )
-        .select(
-            'game_id', 'sequence_id', 'text',
-            'description', 'play_type_id', 'play_type_text',
-            'is_shot', 'points_attempted', 'is_score',
-            'team_id', 'player_id', 'assist_id',
-            'period', 'period_display',
-            'clock_minutes', 'clock_seconds',
-            'away_score', 'home_score',
-            'x_coord', 'y_coord',
-            'timestamp'
-        )
-    )
 
     play_types = (
         plays_inter
@@ -404,6 +585,7 @@ async def transform_from_game(
             pl.col('play_type_text').alias('description'),
             pl.col('is_shot')
         )
+        .unique('id')
         .collect()
     )
 
@@ -412,21 +594,21 @@ async def transform_from_game(
         .select(
             'game_id', 'sequence_id', 'play_type_id',
             'points_attempted', 'is_score',
-            'team_id', 'player_id', 'assist_id',
             'period', 'clock_minutes', 'clock_seconds',
-            'home_score', 'away_score', 'x_coord', 'y_coord',
-            'timestamp'
+            'home_score', 'away_score',
+            _col_if_exists(
+                'x_coord',
+                'y_coord',
+                'timestamp',
+                'team_id',
+                'player_id',
+                'assist_id'
+            )
         )
         .collect()
     )
 
-    players_inter = pl.concat(
-        [
-            _transform_box(away_box_raw, away_id),
-            _transform_box(home_box_raw, home_id)
-        ],
-        how='vertical'
-    )
+    players_inter = _get_players_inter(game_json_raw)
 
     players = (
         players_inter
@@ -449,15 +631,11 @@ async def transform_from_game(
             pl.col('id').alias('player_id'),
             'team_id',
             pl.lit(season).alias('season'),
-            'jersey'
+            _col_if_exists('jersey')
         )
         .collect()
     )
 
-    game_id = (
-        games
-        .item(row=0, column='id')
-    )
     game_logs = (
         players_inter
         .select(
@@ -495,32 +673,43 @@ async def transform_from_player(
     Updates Players.
     """
     player_raw = await client.get_raw_player_json(player_id)
-    athlete = player_raw['page']['content']['player']['plyrHdr']['ath']
+    athlete = _nested_get(
+        player_raw,
+        'page',
+        'content',
+        'player',
+        'plyrHdr',
+        'ath'
+    )
+
+    if athlete is None:
+        logger.debug('Player with id %d was not found')
+        return 0
 
     players = (
         pl.from_dict(athlete)
         .select(
             pl.lit(player_id).alias('id'),
-            cs.matches(r'^htwt$')
+            _col_if_exists('htwt')
             .str.split(', ')
             .list.to_struct(fields=['ht', 'wt'])
             .struct.unnest(),
-            cs.matches(r'^dob$')
-            .str.replace(r' (\d+)', ''),
-            cs.matches(r'^brthpl$')
+            # _col_if_exists('dob')
+            # .str.replace(r' (\d+)', ''),
+            _col_if_exists('brthpl')
             .str.split(', ')
             .list.to_struct(fields=['birth_city', 'birth_state'])
             .struct.unnest()
         )
         .select(
             pl.exclude('htwt', 'brthpl', 'ht', 'wt'),
-            cs.matches(r'^ht$')
+            _col_if_exists('ht')
             .str.replace_all(r'[\'"]', '')
             .str.split(' ')
             .list.to_struct(fields=['height_ft', 'height_in'])
             .struct.unnest()
             .cast(pl.Int64),
-            cs.matches(r'^wt$')
+            _col_if_exists('wt')
             .str.replace(' lbs', '')
             .cast(pl.Int64)
             .alias('weight')
