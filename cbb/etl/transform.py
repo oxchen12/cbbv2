@@ -24,13 +24,12 @@ from .database import (
 )
 from .date import (
     get_season,
-    validate_season,
-    DEFAULT_SEASON_START
+    validate_season
 )
 
 logger = logging.getLogger(__name__)
 
-SCHEDULE_KEEP = (
+_SCHEDULE_KEEP = (
     'id', 'teams', 'date',
     'tbd', 'status', 'venue'
 )
@@ -145,7 +144,7 @@ async def transform_from_schedule(
         {
             k: v
             for k, v in event.items()
-            if k in SCHEDULE_KEEP
+            if k in _SCHEDULE_KEEP
         }
         for date in res['page']['content']['events'].values()
         for event in date
