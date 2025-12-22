@@ -233,7 +233,11 @@ async def transform_from_schedule(
                 .struct.field('id')
                 .cast(pl.Int64)
                 .alias('status_id')
-            )
+            ),
+            # TODO: find better solution for jank hotfix
+            #       |- I have to use None here to ensure it passes
+            #       |- the update check in database.py
+            pl.lit(None).alias('complete_record')
         )
         .select(
             pl.exclude('venue', 'status'),
@@ -616,7 +620,11 @@ async def transform_from_game(
             'id',
             'first_name',
             'last_name',
-            'position'
+            'position',
+            # TODO: find better solution for jank hotfix
+            #       |- I have to use None here to ensure it passes
+            #       |- the update check in database.py
+            pl.lit(None).alias('complete_record')
         )
         .collect()
     )
@@ -712,7 +720,8 @@ async def transform_from_player(
             _col_if_exists('wt')
             .str.replace(' lbs', '')
             .cast(pl.Int64)
-            .alias('weight')
+            .alias('weight'),
+            pl.lit(True).alias('complete_record')
         )
     )
 
