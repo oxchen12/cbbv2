@@ -1,4 +1,4 @@
 # cbb
-(WIP) Web scraping college basketball play-by-play data with SQL database local storage.  
+(WIP) Web scraping college basketball play-by-play data with DuckDB database local storage.  
 
-Hoping to expand feature set to include advanced metrics calculators.
+Currently developing granular analyses including position identification, team streakiness, and others.
