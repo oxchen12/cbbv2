@@ -3,7 +3,7 @@ This module provides functions for loading transformed
 data from ESPN into a local SQLite database.
 """
 from itertools import batched
-from typing import Collection, Any, Sequence
+from typing import Collection, Any, Sequence, Iterable
 import asyncio
 import datetime as dt
 import logging
@@ -162,7 +162,8 @@ async def load_schedule_range(
     Load schedule data from the seasons in a given range.
     """
     start_season, end_season = _fix_season_range(start_season, end_season)
-    logger.debug('Loading schedules for seasons %d to %d', start_season, end_season)
+    logger.debug('Loading schedules for seasons %d to %d',
+                 start_season, end_season)
     seasons = list(range(start_season, end_season + 1))
     season_starts = [
         get_season_start(season)
@@ -197,7 +198,8 @@ async def load_standings_range(
     Load standings data for seasons between `start_season` and `end_season`.
     """
     start_season, end_season = _fix_season_range(start_season, end_season)
-    logger.debug('Loading standings for seasons %d to %d', start_season, end_season)
+    logger.debug('Loading standings for seasons %d to %d',
+                 start_season, end_season)
     tasks = [
         transform_from_standings(conn, client, season)
         for season in tqdm(
@@ -210,8 +212,10 @@ async def load_standings_range(
 
     return get_affected_rows(rows)
 
+
 def _get_season_start_str(season: int) -> str:
     return get_season_start(season).strftime('\'%Y-%m-%d\'')
+
 
 def _extract_column_from_query(
     conn: duckdb.DuckDBPyConnection,
@@ -225,6 +229,7 @@ def _extract_column_from_query(
         .get_column(col)
         .cast(dtype)
     )
+
 
 def _mark_non_transient_complete(
     conn: duckdb.DuckDBPyConnection,
@@ -251,7 +256,7 @@ def _mark_non_transient_complete(
         .alias(id_col)
         .to_frame()
         .with_columns(
-            pl.lit(True).alias('complete_record')
+            pl.lit(False).alias('complete_record')
         )
     )
 
@@ -265,26 +270,14 @@ def _mark_non_transient_complete(
 
     return results
 
-
 async def update_games(
     conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
-    start_season: int = MIN_SEASON,
-    end_season: int = MAX_SEASON
+    game_ids: Sequence[int]
 ) -> list[int]:
     """
-    Updates existing game rows in the given seasons
-    to complete records.
+    Updates existing game rows.
     """
-    query_select_game_ids = (
-        'SELECT id\n'
-        'FROM Games\n'
-        f'WHERE datetime >= {_get_season_start_str(start_season)}\n'
-        f'AND datetime < {_get_season_start_str(end_season + 1)}\n'
-        'AND complete_record IS NULL;'
-    )
-    game_ids = _extract_column_from_query(conn, query_select_game_ids, 'id')
-
     game_res = await _batch_load(
         conn, client, transform_from_game, game_ids,
         return_exceptions=True
@@ -298,15 +291,55 @@ async def update_games(
 
     return game_res
 
-async def update_players(
+async def update_games_seasons(
     conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     start_season: int = MIN_SEASON,
     end_season: int = MAX_SEASON
 ) -> list[int]:
     """
-    Updates existing player rows in the given seasons
-    to complete records.
+    Updates existing game rows in the given seasons.
+    """
+    query_select_game_ids = (
+        'SELECT id\n'
+        'FROM Games\n'
+        f'WHERE datetime >= {_get_season_start_str(start_season)}\n'
+        f'AND datetime < {_get_season_start_str(end_season + 1)}\n'
+        'AND complete_record IS NULL;'
+    )
+    game_ids = _extract_column_from_query(conn, query_select_game_ids, 'id')
+
+    return await update_games(conn, client, game_ids)
+
+async def update_players(
+    conn: duckdb.DuckDBPyConnection,
+    client: AsyncClient,
+    player_ids: Sequence[int]
+) -> list[int]:
+    """
+    Updates existing player rows.
+    """
+    player_res = await _batch_load(
+        conn, client, transform_from_player, player_ids,
+        return_exceptions=True
+    )
+    player_res = _mark_non_transient_complete(
+        conn,
+        player_res,
+        player_ids,
+        Table.PLAYERS
+    )
+
+    return player_res
+
+async def update_players_seasons(
+    conn: duckdb.DuckDBPyConnection,
+    client: AsyncClient,
+    start_season: int = MIN_SEASON,
+    end_season: int = MAX_SEASON
+) -> list[int]:
+    """
+    Updates existing player rows in the given seasons.
     """
     query_select_player_ids = (
         'SELECT DISTINCT player_id\n'
@@ -320,18 +353,7 @@ async def update_players(
         conn, query_select_player_ids, 'player_id'
     )
 
-    player_res = await _batch_load(
-        conn, client, transform_from_player, player_ids,
-        return_exceptions=True
-    )
-    player_res = _mark_non_transient_complete(
-        conn,
-        player_res,
-        player_ids,
-        Table.PLAYERS
-    )
-
-    return player_res
+    return await update_players(conn, client, player_ids)
 
 
 async def load_all(
@@ -358,11 +380,11 @@ async def load_all(
         results.append(schedule_res)
 
     # TODO: update games
-    game_res = await update_games(conn, client, start_season, end_season)
+    game_res = await update_games_seasons(conn, client, start_season, end_season)
     results.append(game_res)
 
     # TODO: update players
-    player_res = await update_players(conn, client, start_season, end_season)
+    player_res = await update_players_seasons(conn, client, start_season, end_season)
     results.append(player_res)
 
     # TODO: not yet implemented
