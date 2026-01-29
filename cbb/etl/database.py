@@ -116,8 +116,9 @@ def _execute_write_query(
 ) -> int:
     """Executes the query on the connection."""
     try:
+        conn.register('df', df)
         res = conn.execute(query)
-        rows = res.fetchone()[0]
+        rows = res.fetchall()[0][0]
     except duckdb.Error as e:
         logger.debug('An error occurred during query execution: %s', e)
         rows = -1
@@ -200,7 +201,9 @@ def write_db(
     return rows
 
 
-def get_affected_rows(rows: list[int]):
+def get_affected_rows(rows: list[int] | int):
+    if isinstance(rows, int):
+        return max(rows, -1)
     return sum(r for r in rows if r >= 0)
 
 
