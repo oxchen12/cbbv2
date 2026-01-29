@@ -23,7 +23,7 @@ from .date import (
     MAX_SEASON,
     CALENDAR_DT_FORMAT
 )
-from .scrape import (
+from .extract import (
     AsyncClient,
     is_non_transient
 )
