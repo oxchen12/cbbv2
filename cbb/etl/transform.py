@@ -95,6 +95,7 @@ def _col_if_exists(name: str, *more_names: str) -> pl.Expr:
     """
     return cs.matches(f'^{"|".join([name, *more_names])}$')
 
+
 def _with_default_col(
     df: pl.DataFrame | pl.LazyFrame,
     name: str,
@@ -198,6 +199,7 @@ async def transform_from_schedule(
         .collect()
     )
 
+    # TODO: find where to get the color from
     teams = (
         games_inter
         .select(
@@ -395,14 +397,22 @@ async def transform_from_standings(
 def _transform_box(json_raw: dict[str, Any],
                    team_id: int) -> pl.LazyFrame:
     box = _empty_df_with_schema(_BOX_SCHEMA).lazy()
+    athletes = _nested_get(json_raw, 'athletes')
     if (
-        len(_nested_get(json_raw, 'athletes')) == 0
-        or 'id' not in json_raw['athletes']
+        athletes is None
+        or len(athletes) == 0
+    ):
+        return box
+
+    first_athlete = _nested_get(athletes[0], 'athlete')
+    if (
+        first_athlete is None
+        or 'id' not in first_athlete
     ):
         return box
 
     box = (
-        pl.from_dicts(json_raw['athletes'])
+        pl.from_dicts(athletes)
         .lazy()
         .unnest('athlete')
         .with_columns(
@@ -439,16 +449,17 @@ def _transform_box(json_raw: dict[str, Any],
 
 
 def _get_players_inter(game_json_raw: dict[str, Any]) -> pl.LazyFrame:
-    if _nested_get(game_json_raw, 'boxscore', 'players') is None:
+    players = _nested_get(game_json_raw, 'boxscore', 'players')
+    if players is None:
         return _empty_df_with_schema(_BOX_SCHEMA).lazy()
 
     away_id, home_id = (
         int(x['team']['id'])
-        for x in game_json_raw['boxscore']['players']
+        for x in players
     )
     away_box_raw, home_box_raw = (
         x['statistics'][0]
-        for x in game_json_raw['boxscore']['players']
+        for x in players
     )
 
     try:
@@ -499,7 +510,7 @@ async def transform_from_game(
                 .cast(pl.String)
                 .str.to_date(
                     format='%Y-%m-%dT%H:%MZ').alias('datetime'),
-                pl.lit(True).alias('complete_record')
+                pl.lit(attendance is not None).alias('complete_record')
             )
         )
 
