@@ -4,10 +4,22 @@ CBB season dates.
 """
 import datetime as dt
 
+import polars as pl
 
 def get_season(date: dt.date) -> int:
-    return int(date.month < 7) + date.year
+    return int(date.month > 7) + date.year
 
+def get_season_pl(date: pl.Expr) -> pl.Expr:
+    return (
+        date
+        .dt.year()
+        .add(
+            date
+            .dt.month()
+            .gt(7)
+            .cast(pl.Int64)
+        )
+    )
 
 # earliest season for which ESPN has data
 MIN_SEASON = 2003
