@@ -3,8 +3,7 @@ This module provides functions for loading transformed
 data from ESPN into a local SQLite database.
 """
 from itertools import batched
-from typing import Collection, Any, Sequence, Iterable
-import asyncio
+from typing import Collection, Any, Sequence
 import datetime as dt
 import logging
 import math
@@ -14,28 +13,28 @@ import aiohttp
 import duckdb
 import polars as pl
 
-from cbb.etl.database import (
+from .database import (
     get_affected_rows, write_db, Table, WriteAction
 )
-from cbb.etl.date import (
+from .date import (
     validate_season,
     get_season_start,
     MIN_SEASON,
     MAX_SEASON,
     CALENDAR_DT_FORMAT
 )
-from cbb.etl.scrape import (
+from .scrape import (
     AsyncClient,
     is_non_transient
 )
 
-from cbb.etl.transform import (
+from .transform import (
     transform_from_schedule,
     transform_from_standings,
     transform_from_game,
     transform_from_player
 )
-from cbb.etl._async import (
+from ._async import (
     MAX_TRANSFORM_COROUTINES
 )
 
@@ -164,7 +163,7 @@ async def load_schedule_range(
     start_season, end_season = _fix_season_range(start_season, end_season)
     logger.debug('Loading schedules for seasons %d to %d',
                  start_season, end_season)
-    seasons = list(range(start_season, end_season + 1))
+    seasons = range(start_season, end_season + 1)
     season_starts = [
         get_season_start(season)
         for season in seasons
