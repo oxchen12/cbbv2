@@ -212,7 +212,8 @@ class AsyncClient:
         raise_on_giveup=True,
         max_tries=5,
         max_time=60,
-        factor=2
+        factor=2,
+        logger=None
     )
     async def _fetch(
         self,
