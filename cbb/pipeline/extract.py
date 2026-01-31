@@ -22,8 +22,8 @@ from .date import (
 
 logger = logging.getLogger(__name__)
 exclude_loggers = ('_log_backoff', '_log_giveup')
-for name in exclude_loggers:
-    logging.getLogger(name).disabled = True
+for logger_name in exclude_loggers:
+    logging.getLogger(logger_name).disabled = True
 T = TypeVar('T')
 JSONObject = dict[str, Any]
 
@@ -54,6 +54,7 @@ SCHEDULE_DATE_FORMAT = '%Y%m%d'
 def is_non_transient(code: int) -> bool:
     return 400 <= code < 500
 
+
 def _is_giveup_http(e: aiohttp.ClientResponseError) -> bool:
     return is_non_transient(e.status)
 
@@ -64,7 +65,8 @@ def _extract_json(text: str) -> JSONObject:
     for x in soup.find_all('script'):
         if str(x).startswith('<script>window'):
             html_raw = str(x).removeprefix(
-                '<script>').removesuffix('</script>')
+                '<script>'
+            ).removesuffix('</script>')
             break
 
     if html_raw == '':
@@ -127,7 +129,8 @@ class AsyncClient:
             or max_concurrents > AsyncClient.MAX_MAX_CONCURRENTS
         ):
             raise ValueError(
-                f'`max_concurrents` must be between {AsyncClient.MIN_MAX_CONCURRENTS} and {AsyncClient.MAX_MAX_CONCURRENTS}')
+                f'`max_concurrents` must be between {AsyncClient.MIN_MAX_CONCURRENTS} and {AsyncClient.MAX_MAX_CONCURRENTS}'
+            )
         self._semaphore = asyncio.Semaphore(max_concurrents)
         self._session = None
 
@@ -152,7 +155,8 @@ class AsyncClient:
         """Asserts whether the session has been initialized."""
         if self._session is None:
             raise RuntimeError(
-                'Client session not initialized. Use `async with`.')
+                'Client session not initialized. Use `async with`.'
+            )
 
     @backoff.on_exception(
         backoff.expo,
@@ -185,8 +189,10 @@ class AsyncClient:
             get_start = time.perf_counter()
             async with self._session.get(url) as resp:
                 get_end = time.perf_counter() - get_start
-                logger.debug('Got %d (%.2fs) from %s',
-                             resp.status, get_end, short_url)
+                logger.debug(
+                    'Got %d (%.2fs) from %s',
+                    resp.status, get_end, short_url
+                )
 
                 await asyncio.sleep(AsyncClient.SLEEP_TIME)
                 return await processor(resp)
