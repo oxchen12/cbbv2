@@ -3,7 +3,10 @@ This module provides functions for scraping data from ESPN.
 """
 from __future__ import annotations
 
-from typing import Any, TypeVar, Callable, Awaitable
+from dataclasses import dataclass
+from itertools import batched
+from pathlib import Path
+from typing import Any, TypeVar, Callable, Awaitable, Iterable
 import asyncio
 import datetime as dt
 import json
@@ -14,10 +17,13 @@ import time
 from bs4 import BeautifulSoup
 import aiohttp
 import backoff
-import requests
+import duckdb
+import polars as pl
 
 from .date import (
-    validate_season
+    validate_season,
+    get_season_start,
+    CALENDAR_DT_FORMAT, get_season,
 )
 
 logger = logging.getLogger(__name__)
