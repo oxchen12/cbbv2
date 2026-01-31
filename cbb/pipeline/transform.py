@@ -12,8 +12,7 @@ import duckdb
 import polars as pl
 import polars.selectors as cs
 
-from .scrape import (
-    get_raw_schedule_json,
+from .extract import (
     AsyncClient
 )
 from .database import (

@@ -6,6 +6,6 @@ from typing import Any, Callable, Awaitable
 
 import asyncio
 
-from cbb.etl.scrape import AsyncClient
+from cbb.pipeline.extract import AsyncClient
 
 MAX_TRANSFORM_COROUTINES = AsyncClient.DEFAULT_MAX_CONCURRENTS * 5
