@@ -1,7 +1,7 @@
 .vscode/
 sandbox/
 __pycache__/
-db/
+data/
 .env
 *.log
 log/
