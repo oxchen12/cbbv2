@@ -4,6 +4,7 @@ data from ESPN into a local SQLite database.
 """
 from itertools import batched
 from typing import Collection, Any, Sequence
+import asyncio
 import datetime as dt
 import logging
 import math
@@ -17,7 +18,7 @@ from .database import (
     get_affected_rows, write_db, Table, WriteAction
 )
 from .date import (
-    validate_season,
+    fix_season_range_ends,
     get_season_start,
     MIN_SEASON,
     MAX_SEASON,
@@ -128,29 +129,6 @@ async def _get_rep_dates_json(init_schedule: dict[str, Any]) -> list[dt.date]:
     return rep_dates
 
 
-def _fix_season_range(
-    start_season: int,
-    end_season: int
-) -> tuple[int, int]:
-    if not validate_season(start_season):
-        logging.info(
-            'Got invalid start_season %d, using default %d',
-            start_season, MIN_SEASON
-        )
-        start_season = MIN_SEASON
-    if not validate_season(end_season):
-        logging.info(
-            'Got invalid end_season %d, using default %d',
-            end_season, MAX_SEASON
-        )
-        end_season = MAX_SEASON
-
-    if start_season > end_season:
-        start_season, end_season = end_season, start_season
-
-    return start_season, end_season
-
-
 async def load_schedule_range(
     conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
@@ -160,7 +138,7 @@ async def load_schedule_range(
     """
     Load schedule data from the seasons in a given range.
     """
-    start_season, end_season = _fix_season_range(start_season, end_season)
+    start_season, end_season = fix_season_range_ends(start_season, end_season)
     logger.debug('Loading schedules for seasons %d to %d',
                  start_season, end_season)
     seasons = range(start_season, end_season + 1)
@@ -196,7 +174,7 @@ async def load_standings_range(
     """
     Load standings data for seasons between `start_season` and `end_season`.
     """
-    start_season, end_season = _fix_season_range(start_season, end_season)
+    start_season, end_season = fix_season_range_ends(start_season, end_season)
     logger.debug('Loading standings for seasons %d to %d',
                  start_season, end_season)
     tasks = [
