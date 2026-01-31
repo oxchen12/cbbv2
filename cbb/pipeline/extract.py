@@ -56,24 +56,6 @@ def is_non_transient(code: int) -> bool:
 def _is_giveup_http(e: aiohttp.ClientResponseError) -> bool:
     return is_non_transient(e.status)
 
-def _get_resp(url: str,
-              timeout: int = DEFAULT_TIMEOUT) -> requests.Response:
-    """Get the raw json from the API."""
-    # TODO: retry handling
-    logger.debug('Fetching from %s...', url)
-    get_start = time.perf_counter()
-    resp = requests.get(
-        url=url,
-        timeout=timeout,
-        headers=DEFAULT_HEADERS
-    )
-    get_end = time.perf_counter() - get_start
-    logger.debug('Got %d (%.2fs)', resp.status_code, get_end)
-    # TODO: error handling
-    if resp.status_code != 200:
-        pass
-
-    return resp
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -98,12 +80,6 @@ def _extract_json(text: str) -> dict[str, Any]:
     json_raw = json.loads(data_match)
 
     return json_raw
-
-
-def _extract_json_from_url(url: str) -> dict[str, Any]:
-    """Extract json data from HTML."""
-    resp = _get_resp(url)
-    return _extract_json(resp.text)
 
 
 def _validate_season(season: int | str):
@@ -134,33 +110,6 @@ def get_schedule_url(date: dt.date):
 def get_player_url(player_id: int | str) -> str:
     """Get the url for the given player_id."""
     return PLAYER_TEMPLATE.format(player_id)
-
-
-def get_raw_game_json(game_id: int | str) -> dict[str, Any]:
-    """Get the raw json from the game page."""
-    url = get_game_url(game_id)
-    return _get_resp(url).json()
-
-
-def get_raw_standings_json(season: int | str) -> dict[str, Any]:
-    """Get the raw json from the standings page for a season."""
-    _validate_season(season)
-    url = get_standings_url(season)
-    return _extract_json_from_url(url)
-
-
-def get_raw_schedule_json(date: dt.date) -> dict[str, Any]:
-    """
-    Get the raw json from the schedule page for a given date.
-    """
-    url = get_schedule_url(date)
-    return _extract_json_from_url(url)
-
-
-def get_raw_player_json(player_id: str | int) -> dict[str, Any]:
-    """Get the raw json from the player page."""
-    url = get_player_url(player_id)
-    return _extract_json_from_url(url)
 
 
 class AsyncClient:
