@@ -57,6 +57,11 @@ DEFAULT_HEADERS = {
 # dates
 SCHEDULE_DATE_FORMAT = '%Y%m%d'
 
+# extraction
+EXTRACT_DESTINATION = Path('./data/raw')
+MAX_QUEUE_SIZE = 500
+
+
 def is_non_transient(code: int) -> bool:
     return 400 <= code < 500
 
@@ -255,3 +260,363 @@ class AsyncClient:
         """Get the raw json from the player page."""
         url = get_player_url(player_id)
         return await self._extract_json_from_html(url)
+
+
+@dataclass(frozen=True)
+class Record:
+    key: str
+    up_to_date: bool
+    payload: JSONObject
+
+
+class RecordBatchWriter:
+    """
+    Writes raw document store records to a file. Receives records asynchronously
+    through a supplied queue and flushes its buffer when batching criteria are reached.
+
+    Attributes:
+        name (str): The name of the writer, used to identify record source.
+        queue (asyncio.Queue): The queue to receive records from.
+        batch_size (int): The number of records in a write batch
+    """
+    DEFAULT_BATCH_SIZE = 100
+    DEFAULT_FLUSH_TIMEOUT = 120  # time between flushes (sec)
+    DEFAULT_TIMEOUT = 600  # time between flushes in sec
+
+    def __init__(
+        self,
+        conn: duckdb.DuckDBPyConnection,
+        name: str,
+        queue: asyncio.Queue,
+        batch_size: int = DEFAULT_BATCH_SIZE
+    ):
+        """
+        Args:
+            conn (duckdb.DuckDBPyConnection): The connection to the duckDB destination database.
+            name (str): The name of the writer, used to identify record source.
+            queue (asyncio.Queue): The queue to receive records from.
+            batch_size (int): The number of records in a write batch.
+        """
+        self.conn = conn
+        self.name = name
+        self.queue = queue
+        self.batch_size = batch_size
+        self.buffer: list[Record] = []
+
+    async def flush(self):
+        """Writes the buffer to the destination file."""
+        if len(self.buffer) == 0:
+            return
+
+        logger.debug('Flushing buffer...')
+        batch = pl.from_dicts(
+            [
+                {
+                    'key': record.key,
+                    'name': self.name,
+                    'up_to_date': record.up_to_date,
+                    'payload': json.dumps(record.payload)
+                }
+                for record in self.buffer
+            ]
+        )
+        self.conn.execute(
+            'INSERT INTO Documents (key, name, up_to_date, payload)\n'
+            'SELECT key, name, up_to_date, payload FROM batch\n'
+        )
+        logger.debug(f'Wrote {len(self.buffer)} records to document store.')
+
+        self.buffer.clear()
+
+    async def run(self):
+        record = {}
+        last_flush = time.monotonic()
+        last_record = time.monotonic()
+        while record is not None:
+            # if time.monotonic() - last_record > self.DEFAULT_TIMEOUT:
+            #     record = None
+            #     continue
+            record = await self.queue.get()
+            last_record = time.monotonic()
+            if record is None:
+                await self.flush()
+                self.queue.task_done()
+                continue
+
+            self.buffer.append(record)
+            if (
+                len(self.buffer) >= self.batch_size
+                or time.monotonic() - last_flush > self.DEFAULT_FLUSH_TIMEOUT
+            ):
+                last_flush = time.monotonic()
+                await self.flush()
+
+            self.queue.task_done()
+
+
+async def _batch_extract_to_queue(
+    queue: asyncio.Queue,
+    keys: Iterable[T],
+    fetch_func: Callable[[T], Awaitable[JSONObject]],
+    key_to_str_func: Callable[[T], str],
+    up_to_date_func: Callable[[T], bool],
+    batch_size: int = RecordBatchWriter.DEFAULT_BATCH_SIZE
+):
+    """
+    Perform asynchronous batch extraction of records to a queue using the supplied pattern.
+
+    Args:
+        queue (AsyncQueue): Write queue to push results to.
+        keys (Iterable[T]): The keys to extract records for.
+        fetch_func (Callable[[T], Awaitable[JSONObject]]): The function to fetch the payload using the key.
+        key_to_str_func (Callable[[T], str]): The function to convert the key to string.
+        up_to_date_func (Callable[[T], bool]): The function to deduce whether the key's record is up to date.
+        batch_size (int): Size of the batches.
+    """
+
+    async def fetch_record_and_put(key: T):
+        payload = await fetch_func(key)
+        record = Record(
+            key=key_to_str_func(key),
+            up_to_date=up_to_date_func(key),
+            payload=payload
+        )
+        await queue.put(record)
+
+    for batch in batched(keys, batch_size):
+        tasks = [
+            fetch_record_and_put(key)
+            for key in batch
+        ]
+        await asyncio.gather(*tasks)
+
+
+async def extract_standings_seasons(
+    client: AsyncClient,
+    queue: asyncio.Queue,
+    seasons: Iterable[int]
+):
+    """
+    Extracts standings for the given season range.
+
+    Args:
+        client (AsyncClient): HTTP client for requesting data.
+        queue (asyncio.Queue): Write queue to push results to.
+        seasons (Iterable[int]): The seasons to extract standings for.
+    """
+    logger.debug('Extracting standings...')
+    # TODO: Check which keys are 1) already stored and 2) up to date
+    await _batch_extract_to_queue(
+        queue,
+        seasons,
+        client.get_raw_standings_json,
+        lambda season: str(season),
+        lambda season: get_season(dt.date.today()) > season
+    )
+    logger.debug('Finished extracting standings.')
+
+    # TODO: return value?
+
+
+# representative date helpers
+def _create_rep_date_range(
+    start: str,
+    end: str
+) -> list[dt.date]:
+    """
+    Get the necessary dates to fetch between start and end from schedules.
+    Assumes start and end are formatted like CALENDAR_DT_FORMAT.
+    """
+    start_date = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
+    start_date = max(
+        start_date,
+        get_season_start(start_date.year)
+    )
+    end_date = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
+    calendar = pl.date_range(
+        start_date,
+        end_date,
+        interval=dt.timedelta(days=1),
+        eager=True
+    )
+    # minimize pages to search by accessing schedules from adjacent dates
+    rep_dates = [
+        date
+        for i, date in enumerate(calendar)
+        if i % 3 == 1 or i == len(calendar) - 1
+    ]
+
+    return rep_dates
+
+
+async def _get_rep_dates_json(init_schedule: JSONObject) -> list[dt.date]:
+    """Get the representative dates from the raw initial schedule."""
+    season_json = init_schedule['page']['content']['season']
+    # the calendar field for some reason doesn't get every date
+    # so instead, we manually generate all dates from start to end
+    rep_dates = _create_rep_date_range(
+        season_json['startDate'], season_json['endDate']
+    )
+
+    return rep_dates
+
+
+async def _get_rep_dates_seasons(
+    client: AsyncClient,
+    seasons: Iterable[int]
+) -> list[dt.date]:
+    season_starts = [
+        get_season_start(season)
+        for season in seasons
+    ]
+    init_schedule_tasks = [
+        client.get_raw_schedule_json(season_start)
+        for season_start in season_starts
+    ]
+    init_schedules = await asyncio.gather(*init_schedule_tasks)
+    season_rep_date_tasks = [
+        _get_rep_dates_json(init_schedule)
+        for init_schedule in init_schedules
+    ]
+    season_rep_dates = await asyncio.gather(*season_rep_date_tasks)
+    rep_dates = [
+        date
+        for srd in season_rep_dates
+        for date in srd
+    ]
+
+    return rep_dates
+
+
+async def extract_schedules_seasons(
+    client: AsyncClient,
+    queue: asyncio.Queue,
+    seasons: Iterable[int]
+):
+    """
+    Extracts schedules for the given season range.
+
+    Args:
+        client (AsyncClient): HTTP client for requesting data.
+        queue (asyncio.Queue): Write queue to push results to.
+        seasons (Iterable[int]): The seasons to extract schedules for.
+    """
+    logger.debug('Getting representative dates...')
+    rep_dates = await _get_rep_dates_seasons(client, seasons)
+
+    logger.debug('Extracting schedules...')
+    # TODO: Check which keys are 1) already stored and 2) up to date
+    await _batch_extract_to_queue(
+        queue,
+        rep_dates,
+        client.get_raw_schedule_json,
+        lambda date: date.strftime('%Y-%m-%d'),
+        lambda date: dt.date.today() > date
+    )
+    logger.debug('Finished extracting schedules.')
+
+    # TODO: return value?
+
+
+async def extract_lane(
+    conn: duckdb.DuckDBPyConnection,
+    client: AsyncClient,
+    name: str,
+    extractor: Callable[[AsyncClient, asyncio.Queue, ...], Awaitable[Any]],
+    params: dict[str, Any],
+    max_queue_size: int = MAX_QUEUE_SIZE,
+):
+    """
+    Creates an extraction/batch writing lane for the given
+    extraction task.
+
+    Args:
+        conn (duckdb.DuckDBPyConnection): Connection to the document store.
+        client (AsyncClient): HTTP client for requesting data.
+        name (str): Document store table name.
+        extractor (Callable[[AsyncClient, asyncio.Queue, ...], Awaitable[Any])): Extraction function that puts results in queue.
+        params (dict[str, Any]): Extraction parameters.
+        max_queue_size (int): Max queue size.
+    """
+    queue = asyncio.Queue(maxsize=max_queue_size)
+    writer = RecordBatchWriter(conn, name, queue)
+    writer_task = asyncio.create_task(writer.run())
+
+    # TODO: figure out how to filter out keys from here
+    #       or pass this information to the extractor
+    await extractor(client, queue, **params)
+
+    # Sentinel
+    await queue.put(None)
+    await writer_task
+
+    # TODO: return value?
+
+
+def init_document_store(conn: duckdb.DuckDBPyConnection):
+    """Initialize the document store."""
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS Documents (\n'
+        '   key VARCHAR PRIMARY KEY,\n'
+        '   name VARCHAR,\n'
+        '   up_to_date BOOLEAN,\n'
+        '   payload JSON,\n'
+        ')'
+    )
+
+
+def get_up_to_date_keys(
+    conn: duckdb.DuckDBPyConnection,
+    name: str
+) -> list[str]:
+    # TODO: anti-injection
+    res = conn.sql(
+        'SELECT key\n'
+        'FROM Documents\n'
+        f'WHERE name = {name} AND up_to_date\n'
+    )
+    return [
+        row[0]
+        for row in res.fetchall()
+    ]
+
+
+async def extract_all(
+    conn: duckdb.DuckDBPyConnection,
+    client: AsyncClient,
+    seasons: Iterable[int],
+):
+    """
+    Orchestrates extraction for all channels of raw data.
+
+    Args:
+        conn (duckdb.DuckDBPyConnection): Connection to the document store.
+        client (AsyncClient): HTTP client for requesting data.
+        seasons (Iterable[int]): The seasons to extract data for.
+    """
+    init_document_store(conn)
+    # TODO: extract standings
+    await extract_lane(
+        conn,
+        client,
+        'standings',
+        extract_standings_seasons,
+        {'seasons': seasons}
+    )
+
+    # TODO: extract schedules
+    await extract_lane(
+        conn,
+        client,
+        'schedule',
+        extract_schedules_seasons,
+        {'seasons': seasons}
+    )
+
+    # TODO: deduce game_id's from schedules
+
+    # TODO: extract games
+
+    # TODO: deduce player_id's from games
+
+    # TODO: extract players
