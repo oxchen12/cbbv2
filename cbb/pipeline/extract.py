@@ -11,6 +11,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import math
 import re
 import time
 
@@ -19,6 +20,8 @@ import aiohttp
 import backoff
 import duckdb
 import polars as pl
+import tqdm
+import tqdm.asyncio
 
 from .date import (
     validate_season,
@@ -332,13 +335,17 @@ class RecordBatchWriter:
         record = {}
         last_flush = time.monotonic()
         last_record = time.monotonic()
+        n_records = 0
+        logger.debug('Starting writer...')
         while record is not None:
             # if time.monotonic() - last_record > self.DEFAULT_TIMEOUT:
             #     record = None
             #     continue
             record = await self.queue.get()
             last_record = time.monotonic()
+            n_records += 1
             if record is None:
+                logger.debug('Reached sentinel after %d records, exiting', n_records)
                 await self.flush()
                 self.queue.task_done()
                 continue
@@ -360,7 +367,8 @@ async def _batch_extract_to_queue(
     fetch_func: Callable[[T], Awaitable[JSONObject]],
     key_to_str_func: Callable[[T], str],
     up_to_date_func: Callable[[T], bool],
-    batch_size: int = RecordBatchWriter.DEFAULT_BATCH_SIZE
+    batch_size: int = RecordBatchWriter.DEFAULT_BATCH_SIZE,
+    disable_tqdm: bool = False,
 ):
     """
     Perform asynchronous batch extraction of records to a queue using the supplied pattern.
@@ -372,7 +380,10 @@ async def _batch_extract_to_queue(
         key_to_str_func (Callable[[T], str]): The function to convert the key to string.
         up_to_date_func (Callable[[T], bool]): The function to deduce whether the key's record is up to date.
         batch_size (int): Size of the batches.
+        disable_tqdm (bool): Whether to disable tqdm progress bars.
     """
+
+    keys = set(keys)
 
     async def fetch_record_and_put(key: T):
         payload = await fetch_func(key)
@@ -381,14 +392,29 @@ async def _batch_extract_to_queue(
             up_to_date=up_to_date_func(key),
             payload=payload
         )
+        logger.debug('Queue size: %d', queue.qsize())
         await queue.put(record)
 
-    for batch in batched(keys, batch_size):
+    for batch in tqdm.tqdm(
+        batched(keys, batch_size),
+        total=math.ceil(len(keys) / batch_size),
+        desc='Extract batches',
+        position=0,
+        leave=True,
+        disable=disable_tqdm
+    ):
         tasks = [
             fetch_record_and_put(key)
             for key in batch
         ]
-        await asyncio.gather(*tasks)
+        await tqdm.asyncio.tqdm.gather(
+            *tasks,
+            total=len(tasks),
+            desc='Batch records',
+            position=1,
+            leave=False,
+            disable=disable_tqdm
+    )
 
 
 async def extract_standings_seasons(
