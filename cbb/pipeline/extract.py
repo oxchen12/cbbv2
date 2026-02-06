@@ -644,20 +644,27 @@ def _cull_keys(keys: Iterable[str | Sequence[str]]) -> Callable[[JSONPayload], J
 async def extract_standings(
     client: AsyncClient,
     queue: asyncio.Queue,
-    seasons: Iterable[int]
+    seasons: Iterable[int],
+    existing_seasons: Iterable[int] | None = None
 ):
     """
-    Extracts standings for the given season range.
+    Extracts standings for the given seasons.
 
     Args:
         client (AsyncClient): HTTP client for requesting data.
         queue (asyncio.Queue): Write queue to push results to.
         seasons (Iterable[int]): The seasons to extract standings for.
+        existing_seasons (Iterable[int]): Existing seasons to exclude when extracting standings.
     """
+    if existing_seasons is None:
+        existing_seasons = []
+
+    seasons = set(seasons).difference(existing_seasons)
+
     logger.debug('Extracting standings...')
-    # TODO: Check which keys are 1) already stored and 2) up to date
     await _batch_extract_to_queue(
         queue,
+        'standings',
         seasons,
         client.get_raw_standings_json,
         lambda season: str(season),
@@ -671,7 +678,8 @@ async def extract_standings(
 async def extract_schedules_seasons(
     client: AsyncClient,
     queue: asyncio.Queue,
-    seasons: Iterable[int]
+    seasons: Iterable[int],
+    existing_dates: Iterable[dt.date] | None = None,
 ):
     """
     Extracts schedules for the given season range.
@@ -680,23 +688,119 @@ async def extract_schedules_seasons(
         client (AsyncClient): HTTP client for requesting data.
         queue (asyncio.Queue): Write queue to push results to.
         seasons (Iterable[int]): The seasons to extract schedules for.
+        existing_dates (Iterable[dt.date]): Existing dates to exclude when extracting schedules.
     """
-    logger.debug('Getting representative dates...')
-    rep_dates = await _get_rep_dates_seasons(client, seasons)
+    if existing_dates is None:
+        existing_dates = []
 
+    logger.debug('Getting representative dates...')
+    rep_dates = await get_rep_dates_seasons(client, seasons)
+    rep_dates = set(rep_dates).difference(existing_dates)
+
+    await extract_schedules(client, queue, rep_dates)
+
+    # TODO: return value?
+
+
+async def extract_schedules(
+    client: AsyncClient,
+    queue: asyncio.Queue,
+    dates: Iterable[dt.date]
+):
+    """
+    Extracts schedules for the given dates. Note that schedules
+    are stored with the previous and next days as well.
+
+    Args:
+        client (AsyncClient): HTTP client for requesting data.
+        queue (asyncio.Queue): Write queue to push results to.
+        dates (Iterable[dt.date]): The dates to extract schedules for.
+    """
     logger.debug('Extracting schedules...')
-    # TODO: Check which keys are 1) already stored and 2) up to date
     await _batch_extract_to_queue(
         queue,
-        rep_dates,
+        'schedules',
+        dates,
         client.get_raw_schedule_json,
-        lambda date: date.strftime('%Y-%m-%d'),
+        lambda date: date.strftime(KEY_DATE_FORMAT),
         lambda date: dt.date.today() > date
     )
     logger.debug('Finished extracting schedules.')
 
-    # TODO: return value?
 
+async def extract_games(
+    client: AsyncClient,
+    queue: asyncio.Queue,
+    game_ids: Iterable[int],
+    existing_game_ids: Iterable[int] | None = None,
+):
+    """
+    Extracts game info for the given game IDs.
+
+    Args:
+        client (AsyncClient): HTTP client for requesting data.
+        queue (asyncio.Queue): Write queue to push results to.
+        game_ids (Iterable[int]): The game IDs to extract info for.
+        existing_game_ids (Iterable[int]): Existing game IDs to exclude when extracting games.
+    """
+    if existing_game_ids is None:
+        existing_game_ids = []
+
+    game_ids = set(game_ids).difference(existing_game_ids)
+    keys_to_cull = ('news', 'videos', 'standings')
+
+    logger.debug('Extracting games...')
+    await _batch_extract_to_queue(
+        queue,
+        'game',
+        game_ids,
+        client.get_raw_game_json,
+        lambda game_id: str(game_id),
+        # TODO: need to extract game start from payload OR manually refit
+        lambda game_id: True,
+        _cull_keys(keys_to_cull)
+    )
+    logger.debug('Finished extracting games.')
+
+
+async def extract_players(
+    client: AsyncClient,
+    queue: asyncio.Queue,
+    player_ids: Iterable[int],
+    existing_player_ids: Iterable[int] | None = None,
+):
+    """
+    Extracts player info for the given player IDs.
+
+    Args:
+        client (AsyncClient): HTTP client for requesting data.
+        queue (asyncio.Queue): Write queue to push results to.
+        player_ids (Iterable[int]): The players to extract info for.
+        existing_player_ids (Iterable[int]): Existing player IDs to exclude when extracting players.
+    """
+    if existing_player_ids is None:
+        existing_player_ids = []
+
+    player_ids = set(player_ids).difference(existing_player_ids)
+    keys_to_cull = (
+        'app', 'ads',
+        ('page', 'content', 'teams'),
+        ('page', 'content', 'navigation'),
+        ('page', 'content', 'stndngs'),
+    )
+    logger.debug('Extracting players...')
+    await _batch_extract_to_queue(
+        queue,
+        'player',
+        player_ids,
+        client.get_raw_player_json,
+        lambda player_id: str(player_id),
+        # TODO: need to extract up to date from payload OR manually label with timestamp
+        #       to be fair, almost all player data I care about should not change
+        lambda player_id: True,
+        _cull_keys(keys_to_cull)
+    )
+    logger.debug('Finished extracting players.')
 
 async def extract_lane(
     conn: duckdb.DuckDBPyConnection,
@@ -800,6 +904,15 @@ async def extract_all(
     # TODO: deduce player_id's from games
 
     # TODO: extract players
+    await extract_lane(
+        players_queue,
+        conn,
+        client,
+        'player',
+        extract_players,
+        {'player_ids': player_ids, 'existing_player_ids': existing_player_ids},
+    )
+
 # representative date helpers
 def _create_rep_date_range(
     start: str,
