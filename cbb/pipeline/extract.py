@@ -274,86 +274,101 @@ class Record:
     key: str
     up_to_date: bool
     payload: JSONPayload
+    error: bool
 
 
-class RecordBatchWriter:
+class AbstractBatchProcessor[T](ABC):
     """
-    Writes raw document store records to a file. Receives records asynchronously
-    through a supplied queue and flushes its buffer when batching criteria are reached.
+    Extracts information from in-memory queued records for later use.
 
     Attributes:
-        name (str): The name of the writer, used to identify record source.
-        queue (asyncio.Queue): The queue to receive records from.
-        batch_size (int): The number of records in a write batch
+        T: the queue input type.
     """
-    DEFAULT_BATCH_SIZE = 100
+    DEFAULT_BATCH_SIZE = 300
     DEFAULT_FLUSH_TIMEOUT = 120  # time between flushes (sec)
-    DEFAULT_TIMEOUT = 600  # time between flushes in sec
+    DEFAULT_TIMEOUT = 600  # time between receiving new records (sec)
 
     def __init__(
         self,
-        conn: duckdb.DuckDBPyConnection,
+        queue: asyncio.Queue[T],
         name: str,
-        queue: asyncio.Queue,
         batch_size: int = DEFAULT_BATCH_SIZE
     ):
-        """
-        Args:
-            conn (duckdb.DuckDBPyConnection): The connection to the duckDB destination database.
-            name (str): The name of the writer, used to identify record source.
-            queue (asyncio.Queue): The queue to receive records from.
-            batch_size (int): The number of records in a write batch.
-        """
-        self.conn = conn
-        self.name = name
         self.queue = queue
+        self.name = name
+        self.buffer: list[T] = []
         self.batch_size = batch_size
-        self.buffer: list[Record] = []
+        self.successors: list[AbstractBatchProcessor[T]] = []
+
+    def add_successor(self, successor: AbstractBatchProcessor[T]):
+        """Adds a successor to the processor."""
+        logger.debug('[%s] Adding successor [%s]', self.name, successor.name)
+        self.successors.append(successor)
+
+    async def notify_successors(self, batch: list[T]):
+        logger.debug('[%s] Notifying sucessors...', self.name)
+
+        async def _notify_successor(successor: AbstractBatchProcessor[T], batch: list[T]):
+            for item in batch:
+                await successor.queue.put(item)
+
+        async with asyncio.TaskGroup() as tg:
+            for successor in self.successors:
+                tg.create_task(_notify_successor(successor, batch))
+
+    async def end_successors(self):
+        logger.debug('[%s] Ending successors...', self.name)
+
+        async def end_successor(successor: AbstractBatchProcessor[T]):
+            await successor.queue.put(None)
+
+        for successor in self.successors:
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(end_successor(successor))
 
     async def flush(self):
-        """Writes the buffer to the destination file."""
-        if len(self.buffer) == 0:
+        """Flushes the buffer and pushes records to successors."""
+        if (
+            len(self.buffer) == 0
+            or len(self.successors) == 1 and self.buffer[0] is None
+        ):
             return
 
-        logger.debug('Flushing buffer...')
-        batch = pl.from_dicts(
-            [
-                {
-                    'key': record.key,
-                    'name': self.name,
-                    'up_to_date': record.up_to_date,
-                    'payload': json.dumps(record.payload)
-                }
-                for record in self.buffer
-            ]
-        )
-        self.conn.execute(
-            'INSERT INTO Documents (key, name, up_to_date, payload)\n'
-            'SELECT key, name, up_to_date, payload FROM batch\n'
-        )
-        logger.debug(f'Wrote {len(self.buffer)} records to document store.')
+        buffer_snapshot = self.buffer.copy()
 
+        logger.debug('[%s] Flushing buffer...', self.name)
+        await self._process()
         self.buffer.clear()
+
+        # logger.debug('[%s] Notifying successors...', self.name)
+        await self.notify_successors(buffer_snapshot)
+
+    @abstractmethod
+    async def _process(self):
+        """Processes flushed records. Should handle sentinel."""
+        raise NotImplementedError('Child classes must implement this method.')
 
     async def run(self):
         record = {}
         last_flush = time.monotonic()
         last_record = time.monotonic()
         n_records = 0
-        logger.debug('Starting writer...')
+        logger.debug('[%s] Starting processor...', self.name)
         while record is not None:
             # if time.monotonic() - last_record > self.DEFAULT_TIMEOUT:
+            #     logger.debug('')
             #     record = None
             #     continue
             record = await self.queue.get()
             last_record = time.monotonic()
-            n_records += 1
             if record is None:
-                logger.debug('Reached sentinel after %d records, exiting', n_records)
+                logger.debug('[%s] Reached sentinel after %d record(s), exiting', self.name, n_records)
                 await self.flush()
+                await self.end_successors()
                 self.queue.task_done()
                 continue
 
+            n_records += 1
             self.buffer.append(record)
             if (
                 len(self.buffer) >= self.batch_size
@@ -363,6 +378,186 @@ class RecordBatchWriter:
                 await self.flush()
 
             self.queue.task_done()
+
+
+class RecordBatchWriter(AbstractBatchProcessor[Record]):
+    """
+    Writes raw document store records to a file.
+
+    Attributes:
+        name (str): The name of the writer, used to identify record source.
+        queue (asyncio.Queue): The queue to receive records from.
+        batch_size (int): The number of records in a write batch
+    """
+
+    def __init__(
+        self,
+        queue: asyncio.Queue[Record],
+        conn: duckdb.DuckDBPyConnection,
+        name: str,
+        batch_size: int = AbstractBatchProcessor.DEFAULT_BATCH_SIZE
+    ):
+        """
+        Args:
+            conn (duckdb.DuckDBPyConnection): The connection to the duckDB destination database.
+            name (str): The name of the writer, used to identify record source.
+            batch_size (int): The number of records in a write batch.
+        """
+        super().__init__(queue, name, batch_size=batch_size)
+        self.conn = conn
+
+    async def _process(self):
+        raw_batch = [
+            {
+                'key': record.key,
+                'name': self.name,
+                'up_to_date': record.up_to_date,
+                'timestamp': dt.datetime.now(),
+                'payload': json.dumps(record.payload)
+            }
+            for record in self.buffer
+            if record is not None and not record.error
+        ]
+        if len(raw_batch) == 0:
+            logger.debug('[%s] No valid records in buffer.', self.name)
+            return
+        batch = pl.from_dicts(raw_batch)
+        res = self.conn.execute(
+            'INSERT INTO Documents (key, name, timestamp, up_to_date, payload)\n'
+            'SELECT key, name, timestamp, up_to_date, payload FROM batch\n'
+        )
+        rows = res.fetchall()[0][0]
+        if rows < 0:
+            logger.debug('[%s] An error occurred while writing to document store.')
+        else:
+            logger.debug('[%s] Wrote %d record(s) to document store.', self.name, rows)
+
+
+def update_discovery_manifest(
+    conn: duckdb.DuckDBPyConnection,
+    keys: Sequence[T],
+    name: str,
+) -> int:
+    batch = pl.DataFrame(
+        {
+            'key': keys,
+            'name': [name] * len(keys),
+        }
+    )
+    res = conn.execute(
+        'INSERT INTO DiscoveryManifest (key, name)\n'
+        'SELECT key, name FROM batch\n'
+        'ON CONFLICT DO NOTHING'
+    )
+    rows = res.fetchall()[0][0]
+    return rows
+
+
+class RecordBatchGameIDExtractor(AbstractBatchProcessor[Record]):
+    """
+    Extracts game IDs from schedule payloads.
+    """
+
+    def __init__(
+        self,
+        queue: asyncio.Queue[Record],
+        conn: duckdb.DuckDBPyConnection,
+        batch_size: int = AbstractBatchProcessor.DEFAULT_BATCH_SIZE
+    ):
+        super().__init__(queue, 'game_id_extractor', batch_size=batch_size)
+        self.conn = conn
+
+    def _get_buffer_game_ids(self):
+        game_ids: list[str] = []
+        for record in self.buffer:
+            if record is None:
+                continue
+            schedule = deep_get(
+                record.payload,
+                'page', 'content', 'events',
+                default={}
+            )
+            for events in schedule.values():
+                for event in events:
+                    game_id = event.get('id')
+                    if game_id is not None:
+                        game_ids.append(game_id)
+        return game_ids
+
+    async def _process(self):
+        game_ids = self._get_buffer_game_ids()
+
+        if len(game_ids) == 0:
+            logger.debug('[%s] No game ids in buffer.', self.name)
+            return
+
+        rows_written = update_discovery_manifest(
+            self.conn,
+            game_ids,
+            'game',
+        )
+
+        if rows_written < 0:
+            logger.debug('[%s] Something went wrong when writing game IDs', self.name)
+        else:
+            logger.debug('[%s] Wrote %d signature(s) to discovery manifest.', self.name, rows_written)
+
+
+class RecordBatchPlayerIDExtractor(AbstractBatchProcessor[Record]):
+    """
+    Extracts player IDs from game payloads.
+    """
+
+    def __init__(
+        self,
+        queue: asyncio.Queue[Record],
+        conn: duckdb.DuckDBPyConnection,
+        batch_size: int = AbstractBatchProcessor.DEFAULT_BATCH_SIZE
+    ):
+        super().__init__(queue, 'player_id_extractor', batch_size=batch_size)
+        self.conn = conn
+
+    def _get_buffer_player_ids(self):
+        player_ids: list[str] = []
+        for record in self.buffer:
+            if record is None:
+                continue
+            boxes = deep_get(
+                record.payload,
+                'boxscore', 'players',
+                default=[]
+            )
+            for box in boxes:
+                stats = box.get('statistics', [])
+                if len(stats) == 0:
+                    continue
+                athletes = stats[0].get('athletes', [])
+                for ath in athletes:
+                    player_id = deep_get(
+                        ath,
+                        'athlete', 'id',
+                    )
+                    if player_id is not None:
+                        player_ids.append(player_id)
+        return player_ids
+
+    async def _process(self):
+        player_ids = self._get_buffer_player_ids()
+
+        if len(player_ids) == 0:
+            logger.debug('[%s] No player ids in buffer.', self.name)
+            return
+
+        rows_written = update_discovery_manifest(
+            self.conn,
+            player_ids,
+            'player',
+        )
+
+        if rows_written < 0:
+            logger.debug('[%s] Something went wrong when writing player IDs', self.name)
+        else:
+            logger.debug('[%s] Wrote %d signature(s) to discovery manifest.', self.name, rows_written)
 
 
 async def _batch_extract_to_queue(
