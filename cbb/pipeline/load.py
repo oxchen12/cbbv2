@@ -2,49 +2,46 @@
 This module provides functions for loading transformed
 data from ESPN into a local SQLite database.
 """
-from itertools import batched
-from typing import Collection, Any, Sequence
 import asyncio
-import datetime as dt
 import logging
 import math
+from itertools import batched
+from typing import Collection, Any, Sequence
 
-from tqdm import tqdm
 import aiohttp
 import duckdb
 import polars as pl
+from tqdm import tqdm
 
+from ._async import (
+    MAX_TRANSFORM_COROUTINES
+)
 from .database import (
     get_affected_rows, write_db, Table, WriteAction
 )
 from .date import (
-    fix_season_range_ends,
     get_season_start,
     MIN_SEASON,
     MAX_SEASON,
-    CALENDAR_DT_FORMAT
+    get_season_range
 )
 from .extract import (
     AsyncClient,
     is_non_transient, get_rep_dates_seasons
 )
-
 from .transform import (
     transform_from_schedule,
     transform_from_standings,
     transform_from_game,
     transform_from_player
 )
-from ._async import (
-    MAX_TRANSFORM_COROUTINES
-)
 
 logger = logging.getLogger(__name__)
 
 
 async def _batch_load(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     load_func,
     args: Collection[Any],
     max_transform_coroutines: int = MAX_TRANSFORM_COROUTINES,
@@ -61,7 +58,7 @@ async def _batch_load(
         disable=disable_tqdm
     ):
         tasks = [
-            load_func(conn, client, arg)
+            load_func(raw_conn, transform_conn, arg)
             for arg in batch
         ]
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -87,7 +84,8 @@ async def _batch_load(
 
 
 async def load_schedule_range(
-    conn: duckdb.DuckDBPyConnection,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     start_season: int = MIN_SEASON,
     end_season: int = MAX_SEASON
@@ -95,35 +93,22 @@ async def load_schedule_range(
     """
     Load schedule data from the seasons in a given range.
     """
-    start_season, end_season = fix_season_range_ends(start_season, end_season)
-    logger.debug('Loading schedules for seasons %d to %d',
-                 start_season, end_season)
-    seasons = range(start_season, end_season + 1)
-    season_starts = [
-        get_season_start(season)
-        for season in seasons
-    ]
-    init_schedule_tasks = [
-        client.get_raw_schedule_json(season_start)
-        for season_start in season_starts
-    ]
-    init_schedules = await asyncio.gather(*init_schedule_tasks)
-    season_rep_date_tasks = [
-        _get_rep_dates_json(init_schedule)
-        for init_schedule in init_schedules
-    ]
-    season_rep_dates = await asyncio.gather(*season_rep_date_tasks)
-    rep_dates = [date for srd in season_rep_dates for date in srd]
+    season_range = get_season_range(start_season, end_season)
+    logger.debug(
+        'Loading schedules for seasons %d to %d',
+        season_range[0], season_range[-1]
+    )
+    rep_dates = await get_rep_dates_seasons(client, season_range)
     rows = await _batch_load(
-        conn, client, transform_from_schedule, rep_dates,
+        raw_conn, transform_conn, transform_from_schedule, rep_dates,
     )
 
     return get_affected_rows(rows)
 
 
 async def load_standings_range(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     start_season: int = MIN_SEASON,
     end_season: int = MAX_SEASON,
     disable_tqdm: bool = False
@@ -131,14 +116,16 @@ async def load_standings_range(
     """
     Load standings data for seasons between `start_season` and `end_season`.
     """
-    start_season, end_season = fix_season_range_ends(start_season, end_season)
-    logger.debug('Loading standings for seasons %d to %d',
-                 start_season, end_season)
+    season_range = get_season_range(start_season, end_season)
+    logger.debug(
+        'Loading standings for seasons %d to %d',
+        season_range[0], season_range[-1]
+    )
     tasks = [
-        transform_from_standings(conn, client, season)
+        transform_from_standings(raw_conn, transform_conn, season)
         for season in tqdm(
-            range(start_season, end_season + 1),
-            total=end_season - start_season + 1,
+            season_range,
+            total=len(season_range),
             disable=disable_tqdm
         )
     ]
@@ -200,24 +187,27 @@ def _mark_non_transient_complete(
         conn,
         WriteAction.UPDATE
     )
-    logger.debug('Marked %d rows complete', rows)
+    logger.debug('Marked %d rows incomplete', rows)
+
+    # TODO: mark completed records properly
 
     return results
 
+
 async def update_games(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     game_ids: Sequence[int]
 ) -> list[int]:
     """
     Updates existing game rows.
     """
     game_res = await _batch_load(
-        conn, client, transform_from_game, game_ids,
+        raw_conn, transform_conn, transform_from_game, game_ids,
         return_exceptions=True
     )
     game_res = _mark_non_transient_complete(
-        conn,
+        transform_conn,
         game_res,
         game_ids,
         Table.GAMES
@@ -225,9 +215,10 @@ async def update_games(
 
     return game_res
 
+
 async def update_games_seasons(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     start_season: int = MIN_SEASON,
     end_season: int = MAX_SEASON
 ) -> list[int]:
@@ -239,26 +230,27 @@ async def update_games_seasons(
         'FROM Games\n'
         f'WHERE datetime >= {_get_season_start_str(start_season)}\n'
         f'AND datetime < {_get_season_start_str(end_season + 1)}\n'
-        'AND complete_record IS NULL;'
+        'AND NOT COALESCE(complete_record, FALSE);'
     )
-    game_ids = _extract_column_from_query(conn, query_select_game_ids, 'id')
+    game_ids = _extract_column_from_query(transform_conn, query_select_game_ids, 'id')
 
-    return await update_games(conn, client, game_ids)
+    return await update_games(raw_conn, transform_conn, game_ids)
+
 
 async def update_players(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     player_ids: Sequence[int]
 ) -> list[int]:
     """
     Updates existing player rows.
     """
     player_res = await _batch_load(
-        conn, client, transform_from_player, player_ids,
+        raw_conn, transform_conn, transform_from_player, player_ids,
         return_exceptions=True
     )
     player_res = _mark_non_transient_complete(
-        conn,
+        transform_conn,
         player_res,
         player_ids,
         Table.PLAYERS
@@ -266,9 +258,10 @@ async def update_players(
 
     return player_res
 
+
 async def update_players_seasons(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     start_season: int = MIN_SEASON,
     end_season: int = MAX_SEASON
 ) -> list[int]:
@@ -281,17 +274,18 @@ async def update_players_seasons(
         'JOIN Players P ON PS.player_id = P.id\n'
         f'WHERE season >= {start_season}\n'
         f'AND season <= {end_season}\n'
-        'AND complete_record IS NULL;'
+        'AND NOT COALESCE(complete_record, FALSE);'
     )
     player_ids = _extract_column_from_query(
-        conn, query_select_player_ids, 'player_id'
+        transform_conn, query_select_player_ids, 'player_id'
     )
 
-    return await update_players(conn, client, player_ids)
+    return await update_players(raw_conn, transform_conn, player_ids)
 
 
 async def load_all(
-    conn: duckdb.DuckDBPyConnection,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     start_season: int = MIN_SEASON,
     end_season: int = MAX_SEASON,
@@ -306,19 +300,20 @@ async def load_all(
     # TODO: add additional db ops in these functions that mark a meta-table
     #       to show that the season has been successfully filled
     if not _seasons_complete:
-        # TODO: load standings
-        standings_res = await load_standings_range(conn, client, start_season, end_season)
-        # TODO: load schedules
-        schedule_res = await load_schedule_range(conn, client, start_season, end_season)
+        # load standings
+        standings_res = await load_standings_range(raw_conn, transform_conn, start_season, end_season)
+        # load schedules
+        # TODO: figure out a better way to do this so I don't need an AsyncClient
+        schedule_res = await load_schedule_range(raw_conn, transform_conn, client, start_season, end_season)
         results.append(standings_res)
         results.append(schedule_res)
 
-    # TODO: update games
-    game_res = await update_games_seasons(conn, client, start_season, end_season)
+    # update games
+    game_res = await update_games_seasons(raw_conn, transform_conn, start_season, end_season)
     results.append(game_res)
 
-    # TODO: update players
-    player_res = await update_players_seasons(conn, client, start_season, end_season)
+    # update players
+    player_res = await update_players_seasons(raw_conn, transform_conn, start_season, end_season)
     results.append(player_res)
 
     # TODO: not yet implemented
