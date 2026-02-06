@@ -39,7 +39,6 @@ exclude_loggers = ('_log_backoff', '_log_giveup')
 for logger_name in exclude_loggers:
     logging.getLogger(logger_name).disabled = True
 T = TypeVar('T')
-JSONObject = dict[str, Any]
 
 # TODO: implement switching to women's, perhaps with a module manager
 # URLs
@@ -78,7 +77,7 @@ def _is_giveup_http(e: aiohttp.ClientResponseError) -> bool:
     return is_non_transient(e.status)
 
 
-def _extract_json(text: str) -> JSONObject:
+def _extract_json(text: str) -> JSONPayload:
     soup = BeautifulSoup(text, 'html.parser')
     html_raw = ''
     for x in soup.find_all('script'):
@@ -216,19 +215,19 @@ class AsyncClient:
                 await asyncio.sleep(AsyncClient.SLEEP_TIME)
                 return await processor(resp)
 
-    async def _extract_json_from_html(self, url: str) -> JSONObject:
+    async def _extract_json_from_html(self, url: str) -> JSONPayload:
         """Extract json from HTML page."""
 
-        async def process_json_from_html(resp: aiohttp.ClientResponse) -> JSONObject:
+        async def process_json_from_html(resp: aiohttp.ClientResponse) -> JSONPayload:
             text = await resp.text(encoding='utf-8')
             return _extract_json(text)
 
         return await self._fetch(url, process_json_from_html)
 
-    async def _extract_as_json(self, url: str) -> JSONObject:
+    async def _extract_as_json(self, url: str) -> JSONPayload:
         """Extract json from json page."""
 
-        async def process_json(resp: aiohttp.ClientResponse) -> JSONObject:
+        async def process_json(resp: aiohttp.ClientResponse) -> JSONPayload:
             return await resp.json()
 
         return await self._fetch(url, process_json)
@@ -236,7 +235,7 @@ class AsyncClient:
     async def get_raw_game_json(
         self,
         game_id: int | str
-    ) -> JSONObject:
+    ) -> JSONPayload:
         """Get the raw json from the game page."""
         url = get_game_url(game_id)
         return await self._extract_as_json(url)
@@ -244,7 +243,7 @@ class AsyncClient:
     async def get_raw_standings_json(
         self,
         season: int | str
-    ) -> JSONObject:
+    ) -> JSONPayload:
         """Get the raw json from the standings page for a season."""
         _validate_season(season)
         url = get_standings_url(season)
@@ -253,7 +252,7 @@ class AsyncClient:
     async def get_raw_schedule_json(
         self,
         date: dt.date
-    ) -> JSONObject:
+    ) -> JSONPayload:
         """
         Get the raw json from the schedule page for a given date.
         A date `str` should be formatted as SCHEDULE_DATE_FORMAT.
@@ -264,7 +263,7 @@ class AsyncClient:
     async def get_raw_player_json(
         self,
         player_id: int | str
-    ) -> JSONObject:
+    ) -> JSONPayload:
         """Get the raw json from the player page."""
         url = get_player_url(player_id)
         return await self._extract_json_from_html(url)
@@ -274,7 +273,7 @@ class AsyncClient:
 class Record:
     key: str
     up_to_date: bool
-    payload: JSONObject
+    payload: JSONPayload
 
 
 class RecordBatchWriter:
@@ -369,7 +368,7 @@ class RecordBatchWriter:
 async def _batch_extract_to_queue(
     queue: asyncio.Queue,
     keys: Iterable[T],
-    fetch_func: Callable[[T], Awaitable[JSONObject]],
+    fetch_func: Callable[[T], Awaitable[JSONPayload]],
     key_to_str_func: Callable[[T], str],
     up_to_date_func: Callable[[T], bool],
     batch_size: int = RecordBatchWriter.DEFAULT_BATCH_SIZE,
