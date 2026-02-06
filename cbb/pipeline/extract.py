@@ -668,76 +668,6 @@ async def extract_standings(
     # TODO: return value?
 
 
-# representative date helpers
-def _create_rep_date_range(
-    start: str,
-    end: str
-) -> list[dt.date]:
-    """
-    Get the necessary dates to fetch between start and end from schedules.
-    Assumes start and end are formatted like CALENDAR_DT_FORMAT.
-    """
-    start_date = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
-    start_date = max(
-        start_date,
-        get_season_start(start_date.year)
-    )
-    end_date = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
-    calendar = pl.date_range(
-        start_date,
-        end_date,
-        interval=dt.timedelta(days=1),
-        eager=True
-    )
-    # minimize pages to search by accessing schedules from adjacent dates
-    rep_dates = [
-        date
-        for i, date in enumerate(calendar)
-        if i % 3 == 1 or i == len(calendar) - 1
-    ]
-
-    return rep_dates
-
-
-async def _get_rep_dates_json(init_schedule: JSONObject) -> list[dt.date]:
-    """Get the representative dates from the raw initial schedule."""
-    season_json = init_schedule['page']['content']['season']
-    # the calendar field for some reason doesn't get every date
-    # so instead, we manually generate all dates from start to end
-    rep_dates = _create_rep_date_range(
-        season_json['startDate'], season_json['endDate']
-    )
-
-    return rep_dates
-
-
-async def _get_rep_dates_seasons(
-    client: AsyncClient,
-    seasons: Iterable[int]
-) -> list[dt.date]:
-    season_starts = [
-        get_season_start(season)
-        for season in seasons
-    ]
-    init_schedule_tasks = [
-        client.get_raw_schedule_json(season_start)
-        for season_start in season_starts
-    ]
-    init_schedules = await asyncio.gather(*init_schedule_tasks)
-    season_rep_date_tasks = [
-        _get_rep_dates_json(init_schedule)
-        for init_schedule in init_schedules
-    ]
-    season_rep_dates = await asyncio.gather(*season_rep_date_tasks)
-    rep_dates = [
-        date
-        for srd in season_rep_dates
-        for date in srd
-    ]
-
-    return rep_dates
-
-
 async def extract_schedules_seasons(
     client: AsyncClient,
     queue: asyncio.Queue,
@@ -870,3 +800,71 @@ async def extract_all(
     # TODO: deduce player_id's from games
 
     # TODO: extract players
+# representative date helpers
+def _create_rep_date_range(
+    start: str,
+    end: str
+) -> list[dt.date]:
+    """
+    Get the necessary dates to fetch between start and end from schedules.
+    Assumes start and end are formatted like CALENDAR_DT_FORMAT.
+    """
+    start_date = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
+    start_date = max(
+        start_date,
+        get_season_start(start_date.year)
+    )
+    end_date = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
+    calendar = pl.date_range(
+        start_date,
+        end_date,
+        interval=dt.timedelta(days=1),
+        eager=True
+    )
+    # minimize pages to search by accessing schedules from adjacent dates
+    rep_dates = [
+        date
+        for i, date in enumerate(calendar)
+        if i % 3 == 1 or i == len(calendar) - 1
+    ]
+
+    return rep_dates
+
+
+async def _get_rep_dates_json(init_schedule: JSONPayload) -> list[dt.date]:
+    """Get the representative dates from the raw initial schedule."""
+    season_json = init_schedule['page']['content']['season']
+    # the calendar field for some reason doesn't get every date
+    # so instead, we manually generate all dates from start to end
+    rep_dates = _create_rep_date_range(
+        season_json['startDate'], season_json['endDate']
+    )
+
+    return rep_dates
+
+
+async def get_rep_dates_seasons(
+    client: AsyncClient,
+    seasons: Iterable[int]
+) -> list[dt.date]:
+    season_starts = [
+        get_season_start(season)
+        for season in seasons
+    ]
+    init_schedule_tasks = [
+        client.get_raw_schedule_json(season_start)
+        for season_start in season_starts
+    ]
+    init_schedules = await asyncio.gather(*init_schedule_tasks)
+    season_rep_date_tasks = [
+        _get_rep_dates_json(init_schedule)
+        for init_schedule in init_schedules
+    ]
+    season_rep_dates = await asyncio.gather(*season_rep_date_tasks)
+    rep_dates = [
+        date
+        for srd in season_rep_dates
+        for date in srd
+    ]
+
+    return rep_dates
