@@ -26,7 +26,7 @@ from .date import (
 )
 from .extract import (
     AsyncClient,
-    is_non_transient
+    is_non_transient, get_rep_dates_seasons
 )
 
 from .transform import (
@@ -84,49 +84,6 @@ async def _batch_load(
 
         results.extend(batch_results)
     return results
-
-
-def _get_rep_dates(
-    start: str,
-    end: str
-) -> list[dt.date]:
-    """
-    Get the necessary dates to fetch between start and end from schedules.
-    Assumes start and end are formatted like CALENDAR_DT_FORMAT.
-    """
-    start_date = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
-    start_date = max(
-        start_date,
-        get_season_start(start_date.year)
-    )
-    end_date = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
-    calendar = pl.date_range(
-        start_date,
-        end_date,
-        interval=dt.timedelta(days=1),
-        eager=True
-    )
-    # minimize pages to search by accessing schedules from
-    # adjacent dates
-    rep_dates = [
-        date
-        for i, date in enumerate(calendar)
-        if i % 3 == 1 or i == len(calendar) - 1
-    ]
-
-    return rep_dates
-
-
-async def _get_rep_dates_json(init_schedule: dict[str, Any]) -> list[dt.date]:
-    """Get the representative dates from the raw initial schedule."""
-    season_json = init_schedule['page']['content']['season']
-    # the calendar field for some reason doesn't get every date
-    # so instead, we manually generate all dates from start to end
-    rep_dates = _get_rep_dates(
-        season_json['startDate'], season_json['endDate']
-    )
-
-    return rep_dates
 
 
 async def load_schedule_range(
