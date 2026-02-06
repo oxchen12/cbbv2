@@ -9,8 +9,10 @@ import polars as pl
 
 logger = logging.getLogger(__name__)
 
+
 def get_season(date: dt.date) -> int:
     return int(date.month > 7) + date.year
+
 
 def get_season_pl(date: pl.Expr) -> pl.Expr:
     return (
@@ -23,6 +25,7 @@ def get_season_pl(date: pl.Expr) -> pl.Expr:
             .cast(pl.Int64)
         )
     )
+
 
 # earliest season for which ESPN has data
 MIN_SEASON = 2003
@@ -52,10 +55,11 @@ def get_season_start(season: int) -> dt.date:
     """Get the start date of the season."""
     return (
         DEFAULT_SEASON_START
-        .replace(year=season-1)
+        .replace(year=season - 1)
     )
 
-def fix_season_range_ends(
+
+def _fix_season_range_ends(
     start_season: int,
     end_season: int
 ) -> tuple[int, int]:
@@ -78,9 +82,12 @@ def fix_season_range_ends(
 
     return start_season, end_season
 
+
 def get_season_range(
     start_season: int,
-    end_season: int
+    end_season: int | None = None
 ) -> list[int]:
-    start_season, end_season = fix_season_range_ends(start_season, end_season)
+    if end_season is None:
+        end_season = MAX_SEASON
+    start_season, end_season = _fix_season_range_ends(start_season, end_season)
     return list(range(start_season, end_season + 1))
