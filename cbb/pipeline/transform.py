@@ -2,19 +2,16 @@
 This module provides functions for transforming raw data
 from ESPN into pl.DataFrames.
 """
-from contextlib import AbstractAsyncContextManager, nullcontext
-from typing import Any
-import asyncio
 import datetime as dt
+import json
 import logging
+from typing import Any
 
 import duckdb
 import polars as pl
 import polars.selectors as cs
 
-from .extract import (
-    AsyncClient
-)
+from ._helpers import JSONPayload
 from .database import (
     Table,
     WriteAction,
@@ -24,6 +21,9 @@ from .database import (
 from .date import (
     get_season,
     validate_season
+)
+from .extract import (
+    KEY_DATE_FORMAT
 )
 
 logger = logging.getLogger(__name__)
@@ -129,16 +129,39 @@ def _nested_get(
     return cur
 
 
+async def _fetch_payload(
+    raw_conn: duckdb.DuckDBPyConnection,
+    key: str,
+    name: str
+) -> JSONPayload:
+    res = raw_conn.sql(
+        'SELECT payload\n'
+        'FROM Documents\n'
+        'WHERE key = $key AND name = $name\n'
+        'ORDER BY timestamp DESC\n'
+        'LIMIT 1',
+        params={'key': key, 'name': name}
+    )
+    payload = res.fetchone()[0]
+    if payload is None:
+        return {}
+    return json.loads(payload)
+
+
 async def transform_from_schedule(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     rep_date: dt.date
 ) -> int:
     """
     Extract data from the schedules for the given (representative) date.
     Populates Venues, Teams, Games, GameStatuses.
     """
-    res = await client.get_raw_schedule_json(rep_date)
+    schedule_json_raw = await _fetch_payload(
+        raw_conn,
+        rep_date.strftime(KEY_DATE_FORMAT),
+        'schedule'
+    )
 
     events = [
         {
@@ -146,7 +169,7 @@ async def transform_from_schedule(
             for k, v in event.items()
             if k in _SCHEDULE_KEEP
         }
-        for date in res['page']['content']['events'].values()
+        for date in schedule_json_raw['page']['content']['events'].values()
         for event in date
     ]
 
@@ -267,15 +290,15 @@ async def transform_from_schedule(
             (game_statuses, Table.GAME_STATUSES, WriteAction.INSERT),
             (games, Table.GAMES, WriteAction.INSERT)
         ],
-        conn=conn
+        conn=transform_conn
     )
 
     return sum(rows)
 
 
 async def transform_from_standings(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     season: int
 ) -> int:
     """
@@ -286,12 +309,17 @@ async def transform_from_standings(
         logging.warning('Got invalid season: %d', season)
         return -1
 
-    standings_json_raw = await client.get_raw_standings_json(season)
+    standings_json_raw = await _fetch_payload(
+        raw_conn,
+        str(season),
+        'standings'
+    )
     standings_content = standings_json_raw['page']['content']
 
     conferences = (
         pl.from_dicts(
-            standings_content['headerscoreboard']['collegeConfs'])
+            standings_content['headerscoreboard']['collegeConfs']
+        )
         .filter(pl.col('name').ne('NCAA Division I'))
         .select(
             pl.col('groupId').cast(pl.Int64).alias('id'),
@@ -387,14 +415,16 @@ async def transform_from_standings(
             (teams, Table.TEAMS, WriteAction.INSERT),
             (conference_alignments, Table.CONFERENCE_ALIGNMENTS, WriteAction.INSERT)
         ],
-        conn=conn
+        conn=transform_conn
     )
 
     return sum(rows)
 
 
-def _transform_box(json_raw: dict[str, Any],
-                   team_id: int) -> pl.LazyFrame:
+def _transform_box(
+    json_raw: dict[str, Any],
+    team_id: int
+    ) -> pl.LazyFrame:
     box = _empty_df_with_schema(_BOX_SCHEMA).lazy()
     athletes = _nested_get(json_raw, 'athletes')
     if (
@@ -479,8 +509,8 @@ def _get_players_inter(game_json_raw: dict[str, Any]) -> pl.LazyFrame:
 
 
 async def transform_from_game(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     game_id: int
 ) -> int:
     """
@@ -488,7 +518,11 @@ async def transform_from_game(
     Populates Plays, PlayTypes, Players, PlayerSeasons, GameLogs.
     Updates Games.
     """
-    game_json_raw = await client.get_raw_game_json(game_id)
+    game_json_raw = await _fetch_payload(
+        raw_conn,
+        str(game_id),
+        'game'
+    )
     if game_json_raw is None:
         logger.warning('Couldn\'t get results for game id %d', game_id)
         return -1
@@ -508,7 +542,8 @@ async def transform_from_game(
                 pl.col('date')
                 .cast(pl.String)
                 .str.to_date(
-                    format='%Y-%m-%dT%H:%MZ').alias('datetime'),
+                    format='%Y-%m-%dT%H:%MZ'
+                ).alias('datetime'),
                 pl.lit(attendance is not None).alias('complete_record')
             )
         )
@@ -563,9 +598,11 @@ async def transform_from_game(
                 play_type_id=pl.col('type_id').cast(pl.Int64),
                 play_type_text=pl.col('type_text'),
                 clock_minutes=pl.col(
-                    'clock_displayValue').list.get(0).cast(pl.Int64),
+                    'clock_displayValue'
+                ).list.get(0).cast(pl.Int64),
                 clock_seconds=pl.col(
-                    'clock_displayValue').list.get(1).cast(pl.Int64),
+                    'clock_displayValue'
+                ).list.get(1).cast(pl.Int64),
                 description=pl.col('shortDescription'),
                 away_score=pl.col('awayScore'),
                 home_score=pl.col('homeScore'),
@@ -674,22 +711,26 @@ async def transform_from_game(
             (player_seasons, Table.PLAYER_SEASONS, WriteAction.INSERT),
             (game_logs, Table.GAME_LOGS, WriteAction.INSERT)
         ],
-        conn=conn
+        conn=transform_conn
     )
 
     return sum(rows)
 
 
 async def transform_from_player(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
+    raw_conn: duckdb.DuckDBPyConnection,
+    transform_conn: duckdb.DuckDBPyConnection,
     player_id: int
 ) -> int:
     """
     Extract data from the player page.
     Updates Players.
     """
-    player_raw = await client.get_raw_player_json(player_id)
+    player_raw = await _fetch_payload(
+        raw_conn,
+        str(player_id),
+        'player'
+    )
     athlete = _nested_get(
         player_raw,
         'page',
@@ -737,7 +778,7 @@ async def transform_from_player(
     rows = write_db(
         players,
         Table.PLAYERS,
-        conn,
+        transform_conn,
         WriteAction.UPDATE
     )
 
