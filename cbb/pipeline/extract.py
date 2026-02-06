@@ -843,27 +843,58 @@ async def extract_lane(
     # TODO: return value?
 
 
-def init_document_store(conn: duckdb.DuckDBPyConnection):
+def _init_document_store(conn: duckdb.DuckDBPyConnection):
+    # TODO: this should NOT be part of the extract module
     """Initialize the document store."""
     conn.execute(
         'CREATE TABLE IF NOT EXISTS Documents (\n'
-        '   key VARCHAR PRIMARY KEY,\n'
+        '   key VARCHAR,\n'
         '   name VARCHAR,\n'
+        '   timestamp TIMESTAMP,\n'
         '   up_to_date BOOLEAN,\n'
         '   payload JSON,\n'
         ')'
     )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS DiscoveryManifest (\n'
+        '   key VARCHAR,\n'
+        '   name VARCHAR,\n'
+        '   PRIMARY KEY (key, name)\n'
+        ')'
+    )
 
 
-def get_up_to_date_keys(
+def _get_existing_keys(
     conn: duckdb.DuckDBPyConnection,
     name: str
 ) -> list[str]:
-    # TODO: anti-injection
+    # TODO: this should NOT be part of the extract module
     res = conn.sql(
         'SELECT key\n'
         'FROM Documents\n'
-        f'WHERE name = {name} AND up_to_date\n'
+        'WHERE name = $name AND COALESCE(up_to_date, FALSE)\n',
+        params={'name': name}
+    )
+    # TODO: make this a generator since I can just
+    #       pass iterables to my extractors
+    return [
+        row[0]
+        for row in res.fetchall()
+    ]
+
+
+def _get_discovered_keys(
+    conn: duckdb.DuckDBPyConnection,
+    name: str
+):
+    # TODO: this should NOT be part of the extract module
+    res = conn.sql(
+        'SELECT key\n'
+        'FROM DiscoveryManifest\n'
+        'WHERE name = $name\n'
+        'EXCEPT\n'
+        'SELECT key FROM Documents WHERE name = $name AND up_to_date',
+        params={'name': name}
     )
     return [
         row[0]
