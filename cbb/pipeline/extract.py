@@ -562,10 +562,12 @@ class RecordBatchPlayerIDExtractor(AbstractBatchProcessor[Record]):
 
 async def _batch_extract_to_queue(
     queue: asyncio.Queue,
+    name: str,
     keys: Iterable[T],
     fetch_func: Callable[[T], Awaitable[JSONPayload]],
     key_to_str_func: Callable[[T], str],
     up_to_date_func: Callable[[T], bool],
+    cull_func: Callable[[JSONPayload], JSONPayload] = lambda payload: payload,
     batch_size: int = RecordBatchWriter.DEFAULT_BATCH_SIZE,
     disable_tqdm: bool = False,
 ):
@@ -574,30 +576,38 @@ async def _batch_extract_to_queue(
 
     Args:
         queue (AsyncQueue): Write queue to push results to.
+        name (str): The name of the extract job.
         keys (Iterable[T]): The keys to extract records for.
         fetch_func (Callable[[T], Awaitable[JSONObject]]): The function to fetch the payload using the key.
         key_to_str_func (Callable[[T], str]): The function to convert the key to string.
         up_to_date_func (Callable[[T], bool]): The function to deduce whether the key's record is up to date.
+        cull_func (Callable[[JSONPayload], JSONPayload]): The function to cull unneeded keys from the payload.
         batch_size (int): Size of the batches.
         disable_tqdm (bool): Whether to disable tqdm progress bars.
     """
-
+    # Guarantee that no duplicates exist
     keys = set(keys)
 
     async def fetch_record_and_put(key: T):
-        payload = await fetch_func(key)
+        try:
+            payload = await fetch_func(key)
+            payload = cull_func(payload)
+        except aiohttp.ClientError as e:
+            payload = None
         record = Record(
+            # TODO: generalize these to take the payload instead
             key=key_to_str_func(key),
             up_to_date=up_to_date_func(key),
-            payload=payload
+            payload=payload,
+            error=payload is None
         )
-        logger.debug('Queue size: %d', queue.qsize())
+        # logger.debug('Queue size: %d', queue.qsize())
         await queue.put(record)
 
     for batch in tqdm.tqdm(
         batched(keys, batch_size),
         total=math.ceil(len(keys) / batch_size),
-        desc='Extract batches',
+        desc=f'[{name}] Extract batches',
         position=0,
         leave=True,
         disable=disable_tqdm
@@ -609,14 +619,29 @@ async def _batch_extract_to_queue(
         await tqdm.asyncio.tqdm.gather(
             *tasks,
             total=len(tasks),
-            desc='Batch records',
+            desc=f'[{name}] Batch records',
             position=1,
             leave=False,
             disable=disable_tqdm
-    )
+        )
 
 
-async def extract_standings_seasons(
+def _cull_keys(keys: Iterable[str | Sequence[str]]) -> Callable[[JSONPayload], JSONPayload]:
+    """Creates a cull function to remove the supplied keys.
+    If iterable is provided as a key, search for the nested key to pop."""
+
+    def _cull_payload_keys(payload: JSONPayload) -> JSONPayload:
+        for key in keys:
+            if isinstance(key, str):
+                key = [key]
+            deep_pop(payload, *key, default=None)
+        return payload
+
+    return _cull_payload_keys
+
+
+# extractors
+async def extract_standings(
     client: AsyncClient,
     queue: asyncio.Queue,
     seasons: Iterable[int]
