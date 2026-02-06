@@ -19,7 +19,7 @@ SQL_DIR = SUBMODULE_DIR / 'sql'
 INIT_FILENAME = 'create_tables.sql'
 INIT_FILE = SQL_DIR / INIT_FILENAME
 
-DB_DIR = Path.cwd() / 'db'
+DB_DIR = Path.cwd() / 'data'
 DB_FILENAME = 'cbb.duckdb'
 DB_FILE = DB_DIR / DB_FILENAME
 
