@@ -802,35 +802,41 @@ async def extract_players(
     )
     logger.debug('Finished extracting players.')
 
+
+# abstracted extraction
 async def extract_lane(
+    queue: asyncio.Queue,
     conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     name: str,
     extractor: Callable[[AsyncClient, asyncio.Queue, ...], Awaitable[Any]],
     params: dict[str, Any],
-    max_queue_size: int = MAX_QUEUE_SIZE,
+    successors: Iterable[AbstractBatchProcessor[Record]] = None,
 ):
     """
     Creates an extraction/batch writing lane for the given
     extraction task.
 
     Args:
+        queue (asyncio.Queue): Write queue to push results to.
         conn (duckdb.DuckDBPyConnection): Connection to the document store.
         client (AsyncClient): HTTP client for requesting data.
         name (str): Document store table name.
         extractor (Callable[[AsyncClient, asyncio.Queue, ...], Awaitable[Any])): Extraction function that puts results in queue.
         params (dict[str, Any]): Extraction parameters.
+        successors (Iterable[AbstractBatchProcessor[Record]]): Batch writer successors.
         max_queue_size (int): Max queue size.
     """
-    queue = asyncio.Queue(maxsize=max_queue_size)
-    writer = RecordBatchWriter(conn, name, queue)
+    if successors is None:
+        successors = []
+    writer = RecordBatchWriter(queue, conn, name)
+    for successor in successors:
+        writer.add_successor(successor)
     writer_task = asyncio.create_task(writer.run())
 
-    # TODO: figure out how to filter out keys from here
-    #       or pass this information to the extractor
     await extractor(client, queue, **params)
 
-    # Sentinel
+    # sentinel
     await queue.put(None)
     await writer_task
 
