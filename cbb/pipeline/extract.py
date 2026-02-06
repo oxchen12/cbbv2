@@ -907,6 +907,7 @@ async def extract_all(
     client: AsyncClient,
     seasons: Iterable[int],
 ):
+    # TODO: this should NOT be part of the extract module
     """
     Orchestrates extraction for all channels of raw data.
 
@@ -915,31 +916,66 @@ async def extract_all(
         client (AsyncClient): HTTP client for requesting data.
         seasons (Iterable[int]): The seasons to extract data for.
     """
-    init_document_store(conn)
+    _init_document_store(conn)
     # TODO: extract standings
+    standings_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+    existing_seasons = _get_existing_keys(conn, 'standings')
+    existing_seasons = [int(season) for season in existing_seasons]
     await extract_lane(
+        standings_queue,
         conn,
         client,
         'standings',
-        extract_standings_seasons,
-        {'seasons': seasons}
+        extract_standings,
+        {'seasons': seasons, 'existing_seasons': existing_seasons}
     )
 
     # TODO: extract schedules
+    schedules_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+    existing_dates = _get_existing_keys(conn, 'schedule')
+    existing_dates = [dt.date.strptime(date, KEY_DATE_FORMAT) for date in existing_dates]
+    game_id_extractor = RecordBatchGameIDExtractor(
+        asyncio.Queue(maxsize=MAX_QUEUE_SIZE),
+        conn
+    )
+    game_id_extractor_task = asyncio.create_task(game_id_extractor.run())
     await extract_lane(
+        schedules_queue,
         conn,
         client,
         'schedule',
         extract_schedules_seasons,
-        {'seasons': seasons}
+        {'seasons': seasons, 'existing_dates': existing_dates},
+        [game_id_extractor],
     )
+    await game_id_extractor_task
 
-    # TODO: deduce game_id's from schedules
+    # TODO: for now, let's manually invalidate the game_ids that are after today
 
     # TODO: extract games
+    games_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+    game_ids = _get_discovered_keys(conn, 'game')
+    existing_game_ids = _get_existing_keys(conn, 'game')
+    existing_game_ids = [int(game_id) for game_id in existing_game_ids]
+    player_id_extractor = RecordBatchPlayerIDExtractor(
+        asyncio.Queue(maxsize=MAX_QUEUE_SIZE),
+        conn
+    )
+    asyncio.create_task(player_id_extractor.run())
+    await extract_lane(
+        games_queue,
+        conn,
+        client,
+        'game',
+        extract_games,
+        {'game_ids': game_ids, 'existing_game_ids': existing_game_ids},
+        [player_id_extractor]
+    )
 
-    # TODO: deduce player_id's from games
-
+    players_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+    player_ids = _get_discovered_keys(conn, 'player')
+    existing_player_ids = _get_existing_keys(conn, 'player')
+    existing_player_ids = [int(player_id) for player_id in existing_player_ids]
     # TODO: extract players
     await extract_lane(
         players_queue,
