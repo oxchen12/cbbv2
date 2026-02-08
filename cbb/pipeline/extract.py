@@ -1,8 +1,6 @@
 """
 This module provides functions for scraping data from ESPN.
 """
-from __future__ import annotations
-
 import asyncio
 import datetime as dt
 import json
@@ -12,19 +10,19 @@ import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 from itertools import batched
 from pathlib import Path
-from typing import Any, TypeVar, Callable, Awaitable, Iterable, Sequence
+from typing import (Any, Awaitable, Callable, Iterable, Sequence, Type, TypeVar)
 
 import aiohttp
 import backoff
-import duckdb
-import polars as pl
 import tqdm
 import tqdm.asyncio
 from bs4 import BeautifulSoup
 
 import cbb.pipeline._helpers
+from .date import (get_season, validate_season)
 
 logger = logging.getLogger(__name__)
 exclude_loggers = ('_log_backoff', '_log_giveup')
