@@ -8,6 +8,7 @@ from typing import Any, TypeVar
 logger = logging.getLogger(__name__)
 T = TypeVar('T')
 
+
 def _is_timed_out(
     last: float,
     timeout: float | int
@@ -21,7 +22,7 @@ def _is_timed_out(
     return (time.monotonic() - last) > timeout
 
 
-class AbstractExtractProducer[I, O](ABC):
+class AbstractIngestor[I, O](ABC):
     """
     Consumes data from a source, processes it, then produces to any number of
     successor queues.
@@ -30,30 +31,29 @@ class AbstractExtractProducer[I, O](ABC):
         I: the queue input type.
         O: the producer output type.
     """
-    DEFAULT_TIMEOUT = 600  # time between receiving new items (sec)
 
     def __init__(
         self,
-        queue: asyncio.Queue[I],
         name: str,
-        timeout: int = DEFAULT_TIMEOUT
+        queue: asyncio.Queue[I | None],
+        propagate_end: bool = False
     ):
         """
         Args:
             queue (asyncio.Queue): The source queue.
             name (str): The name of this producer.
-            timeout (int): The maximum time between receiving input items.
+            propagate_end (bool): Whether to terminate successors upon ending.
         """
         self.queue = queue
         self.name = name
-        self.timeout = timeout
-        self.successors: list[AbstractExtractProducer[O, Any]] = []
+        self.propagate_end = propagate_end
+        self.successors: list[AbstractIngestor[O, Any]] = []
 
-    def add_successor(self, successor: AbstractExtractProducer[O, Any]):
+    def add_successor(self, successor: AbstractIngestor[O, Any]):
         """Adds a successor to the processor.
 
         Args:
-            successor (AbstractExtractProducer[O, Any]): The successor to add. Successor input type must match processor output type.
+            successor (AbstractIngestor[O, Any]): The successor to add. Successor input type must match processor output type.
         """
         logger.debug('[%s] Adding successor [%s]', self.name, successor.name)
         self.successors.append(successor)
@@ -64,9 +64,10 @@ class AbstractExtractProducer[I, O](ABC):
         Args:
             items (list[O]): The new items to push to successors.
         """
-        logger.debug('[%s] Notifying successors...', self.name)
 
-        async def _notify_successor(successor: AbstractExtractProducer[T, Any]):
+        # logger.debug('[%s] Notifying successors...', self.name)
+
+        async def _notify_successor(successor: AbstractIngestor[O, Any]):
             for item in items:
                 await successor.queue.put(item)
 
@@ -76,8 +77,9 @@ class AbstractExtractProducer[I, O](ABC):
 
     async def end_successors(self):
         """Sends a sentinel value to successors."""
-        logger.debug('[%s] Ending successors...', self.name)
-        await self.notify_successors([None])
+        if self.propagate_end:
+            logger.debug('[%s] Ending successors...', self.name)
+            await self.notify_successors([None])
 
     @abstractmethod
     async def run(self):
@@ -85,7 +87,7 @@ class AbstractExtractProducer[I, O](ABC):
         raise NotImplementedError('Child classes must implement this method.')
 
 
-class AbstractImmediateExtractProducer[I, O](AbstractExtractProducer[I, O], ABC):
+class AbstractImmediateIngestor[I, O](AbstractIngestor[I, O], ABC):
     @abstractmethod
     def _process_item(self, item: I) -> list[O]:
         """Processes an item. Should handle sentinel elegantly.
@@ -98,15 +100,10 @@ class AbstractImmediateExtractProducer[I, O](AbstractExtractProducer[I, O], ABC)
 
     async def run(self):
         """Runs the processor."""
-        last_record = time.monotonic()
         n_records = 0
         logger.debug('[%s] Starting processor...', self.name)
         while True:
-            if time.monotonic() - last_record > self.timeout:
-                logger.debug('Timed out %d seconds after receiving last item', self.timeout)
-                break
             item = await self.queue.get()
-            last_record = time.monotonic()
             if item is None:
                 logger.debug('[%s] Reached sentinel after %d item(s), exiting', self.name, n_records)
                 await self.end_successors()
@@ -120,7 +117,7 @@ class AbstractImmediateExtractProducer[I, O](AbstractExtractProducer[I, O], ABC)
             self.queue.task_done()
 
 
-class AbstractBatchExtractProducer[I, O](AbstractExtractProducer[I, O], ABC):
+class AbstractBatchIngestor[I, O](AbstractIngestor[I, O], ABC):
     """
     AbstractExtractProducer that processes items in batches.
     Best for I/O-bound tasks.
@@ -135,28 +132,26 @@ class AbstractBatchExtractProducer[I, O](AbstractExtractProducer[I, O], ABC):
 
     def __init__(
         self,
-        queue: asyncio.Queue[I],
         name: str,
-        timeout: int = AbstractExtractProducer.DEFAULT_TIMEOUT,
+        queue: asyncio.Queue[I | None],
         batch_size: int = DEFAULT_BATCH_SIZE,
-        flush_timeout: int = DEFAULT_FLUSH_TIMEOUT,
+        flush_timeout: int = DEFAULT_FLUSH_TIMEOUT
     ):
         """
         Args:
             queue (asyncio.Queue): The source queue.
             name (str): The name of this producer.
-            timeout (int): The maximum time between receiving input items.
             batch_size (int): The number of items to process in each batch.
             flush_timeout (int): The maximum time between batch flushes. Unused if batch_process is False.
         """
-        super().__init__(queue, name, timeout)
+        super().__init__(name, queue)
         self.batch_size = batch_size
         self.flush_timeout = flush_timeout
         self.buffer: list[I] = []
 
     @abstractmethod
     def _process_batch(self, items: list[I]) -> list[O]:
-        """Processes a batch of items. Should handle sentinel elegantly.
+        """Applies transformations or other operations on the batch. Should handle sentinel elegantly.
 
         Args:
             items (list[I]): The items to process.

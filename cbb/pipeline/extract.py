@@ -23,6 +23,7 @@ from bs4 import BeautifulSoup
 
 import cbb.pipeline._helpers
 from .date import (get_season, validate_season)
+from .interfaces import (AbstractBatchIngestor, AbstractImmediateIngestor, AbstractIngestor)
 
 logger = logging.getLogger(__name__)
 exclude_loggers = ('_log_backoff', '_log_giveup')
