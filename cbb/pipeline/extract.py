@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 from itertools import batched
 from pathlib import Path
-from typing import (Any, Awaitable, Callable, Iterable, Sequence, Type, TypeVar)
+from typing import (Any, Awaitable, Callable, Iterable, Sequence, TypeVar)
 
 import aiohttp
 import backoff
@@ -31,18 +31,18 @@ for logger_name in exclude_loggers:
     logging.getLogger(logger_name).disabled = True
 T = TypeVar('T')
 
-# TODO: implement switching to women's, perhaps with a module manager
+# TODO: implement switching to other competitions, perhaps with a module manager
 # URLs
-LEAGUE = 'mens-college-basketball'
+COMPETITION = 'mens-college-basketball'
 API_PREFIX = (
-    f'https://site.web.api.espn.com/apis/site/v2/sports/basketball/{LEAGUE}'
+    f'https://site.web.api.espn.com/apis/site/v2/sports/basketball/{COMPETITION}'
 )
 GAME_API_TEMPLATE = (
     f'{API_PREFIX}/summary?region=us&lang=en&contentorigin=espn&event={{}}'
 )
 CONFERENCES_API_URL = f'{API_PREFIX}/scoreboard/conferences?groups=50'
 
-WEB_PREFIX = f'https://www.espn.com/{LEAGUE}'
+WEB_PREFIX = f'https://www.espn.com/{COMPETITION}'
 STANDINGS_TEMPLATE = f'{WEB_PREFIX}/standings/_/season/{{}}'
 SCHEDULE_TEMPLATE = f'{WEB_PREFIX}/schedule/_/date/{{}}'
 PLAYER_TEMPLATE = f'{WEB_PREFIX}/player/_/id/{{}}'
@@ -271,7 +271,7 @@ class RecordType(Enum):
     GAME = ('game', int)
     PLAYER = ('player', int)
 
-    def __init__(self, label: str, key_type: Type):
+    def __init__(self, label: str, key_type: type):
         self.label = label
         self.key_type = key_type
 
