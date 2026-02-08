@@ -613,7 +613,7 @@ async def _batch_extract_to_queue(
             fetch_record_and_put(key)
             for key in batch
         ]
-        await tqdm.asyncio.tqdm.gather(
+        res = await cbb.pipeline._helpers.tqdm_gather(
             *tasks,
             total=len(tasks),
             desc=f'[{name}] Batch records',
@@ -623,15 +623,20 @@ async def _batch_extract_to_queue(
         )
 
 
-def _cull_keys(keys: Iterable[str | Sequence[str]]) -> Callable[[JSONPayload], JSONPayload]:
+def _cull_keys(keys: Iterable[str | Sequence[str]]) -> Callable[
+    [cbb.pipeline._helpers.JSONPayload], cbb.pipeline._helpers.JSONPayload]:
     """Creates a cull function to remove the supplied keys.
     If iterable is provided as a key, search for the nested key to pop."""
 
-    def _cull_payload_keys(payload: JSONPayload) -> JSONPayload:
+    Args:
+        keys (Iterable[str | Sequence[str]]): List of keys to extract. Pass nested keys as Sequence.
+    """
+
+    def _cull_payload_keys(payload: cbb.pipeline._helpers.JSONPayload) -> cbb.pipeline._helpers.JSONPayload:
         for key in keys:
             if isinstance(key, str):
                 key = [key]
-            deep_pop(payload, *key, default=None)
+            cbb.pipeline._helpers.deep_pop(payload, *key, default=None)
         return payload
 
     return _cull_payload_keys
@@ -691,8 +696,7 @@ async def extract_schedules_seasons(
         existing_dates = []
 
     logger.debug('Getting representative dates...')
-    rep_dates = await get_rep_dates_seasons(client, seasons)
-    rep_dates = set(rep_dates).difference(existing_dates)
+    rep_dates = await cbb.pipeline._helpers.get_rep_dates_seasons(client, seasons)
 
     await extract_schedules(client, queue, rep_dates)
 
