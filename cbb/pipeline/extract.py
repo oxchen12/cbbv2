@@ -265,12 +265,42 @@ class AsyncClient:
         return await self._extract_json_from_html(url)
 
 
+class RecordType(Enum):
+    STANDINGS = ('standings', int)
+    SCHEDULE = ('schedule', dt.date)
+    GAME = ('game', int)
+    PLAYER = ('player', int)
+
+    def __init__(self, label: str, key_type: Type):
+        self.label = label
+        self.key_type = key_type
+
+    def raw_key_to_str(self, raw_key: Any):
+        # TODO: I feel like I can redo this class with generic typing
+        match self.key_type:
+            case dt.date:
+                return raw_key.strftime(KEY_DATE_FORMAT)
+            case _:
+                return str(raw_key)
+
+
 @dataclass(frozen=True)
 class Record:
+    type_: RecordType
+    payload: cbb.pipeline._helpers.JSONPayload
+    error: bool
+
+
+@dataclass(frozen=True)
+class IncompleteRecord[T](Record):
+    raw_key: T
+
+
+@dataclass(frozen=True)
+class CompleteRecord(Record):
     key: str
     up_to_date: bool
-    payload: JSONPayload
-    error: bool
+
 
 
 class AbstractBatchProcessor[T](ABC):
