@@ -68,6 +68,8 @@ class AbstractIngestor[I, O](ABC):
         async def _notify_successor(successor: AbstractIngestor[O, Any]):
             for item in items:
                 await successor.queue.put(item)
+            if isinstance(successor, AbstractBatchIngestor):
+                await successor.let_flush()
 
         async with asyncio.TaskGroup() as tg:
             for successor in self.successors:
@@ -163,6 +165,10 @@ class AbstractBatchIngestor[I, O](AbstractIngestor[I, O], ABC):
         # TODO: decide whether I want to make this functional instead
         raise NotImplementedError('Child classes must implement this method.')
 
+    @property
+    def batch_ready(self) -> bool:
+        return len(self.buffer) >= self.batch_size
+
     async def flush(self) -> list[O]:
         """Flushes the buffer and returns processed items."""
         buffer_size = len(self.buffer)
@@ -177,6 +183,11 @@ class AbstractBatchIngestor[I, O](AbstractIngestor[I, O], ABC):
         logger.debug('[%s] Flushed buffer of size %d', self.name, buffer_size)
         return processed_items
 
+    async def let_flush(self):
+        """Flushes the buffer if buffer has reached batch size."""
+        if self.batch_ready:
+            await self.flush()
+
     async def run(self):
         """Runs the processor."""
         last_flush = time.monotonic()
@@ -184,9 +195,6 @@ class AbstractBatchIngestor[I, O](AbstractIngestor[I, O], ABC):
         n_records = 0
         logger.debug('[%s] Starting processor...', self.name)
         while True:
-            if _is_timed_out(last_item, self.timeout):
-                logger.debug('[%s] Timed out %d seconds after receiving last item', self.name, self.timeout)
-                break
             item = await self.queue.get()
             last_item = time.monotonic()
             if item is None:
@@ -199,7 +207,7 @@ class AbstractBatchIngestor[I, O](AbstractIngestor[I, O], ABC):
             n_records += 1
             self.buffer.append(item)
             if (
-                len(self.buffer) >= self.batch_size
+                self.batch_ready
                 or _is_timed_out(last_flush, self.flush_timeout)
             ):
                 processed_items = await self.flush()
