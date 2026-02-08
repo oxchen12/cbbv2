@@ -11,7 +11,6 @@ import duckdb
 import polars as pl
 import polars.selectors as cs
 
-from ._helpers import JSONPayload
 from .database import (
     Table,
     WriteAction,
@@ -23,8 +22,9 @@ from .date import (
     validate_season
 )
 from .extract import (
-    KEY_DATE_FORMAT
+    KEY_DATE_FORMAT, RecordType
 )
+from .helpers import JSONPayload, deep_get
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ _GAMES_SCHEMA = {
 }
 
 
-def _col_if_exists(name: str, *more_names: str) -> pl.Expr:
+def _col_if_exists(name: str, *more_names: str) -> cs.Selector:
     """
     Selector for an optional column.
     Returns an empty selector if the column does not exist.
@@ -110,23 +110,8 @@ def _with_default_col(
     return df.with_columns(default.alias(name))
 
 
-def _empty_df_with_schema(schema: dict[str, pl.DataType]) -> pl.DataFrame:
+def _empty_df_with_schema(schema: dict[str, type[pl.DataType]]) -> pl.DataFrame:
     return pl.DataFrame([], schema=schema)
-
-
-def _nested_get(
-    data: dict[Any, Any] | Any,
-    *keys,
-    default: Any = None
-) -> Any:
-    """.get a nested attribute from the dict."""
-    cur = data
-    for key in keys:
-        if key in cur:
-            cur = cur[key]
-        else:
-            return default
-    return cur
 
 
 async def _fetch_payload(
@@ -160,7 +145,7 @@ async def transform_from_schedule(
     schedule_json_raw = await _fetch_payload(
         raw_conn,
         rep_date.strftime(KEY_DATE_FORMAT),
-        'schedule'
+        RecordType.SCHEDULE.label
     )
 
     events = [
@@ -312,13 +297,17 @@ async def transform_from_standings(
     standings_json_raw = await _fetch_payload(
         raw_conn,
         str(season),
-        'standings'
+        RecordType.STANDINGS.label
     )
-    standings_content = standings_json_raw['page']['content']
+    standings_content = deep_get(standings_json_raw, 'page', 'content')
+
+    if standings_content is None:
+        logging.warning('Got invalid standings page: %d', season)
+        return -1
 
     conferences = (
         pl.from_dicts(
-            standings_content['headerscoreboard']['collegeConfs']
+            deep_get(standings_content, 'headerscoreboard', 'collegeConfs', default={})
         )
         .filter(pl.col('name').ne('NCAA Division I'))
         .select(
@@ -339,7 +328,9 @@ async def transform_from_standings(
         )
 
     teams_confs_base = (
-        pl.from_dicts(standings_content['standings']['groups']['groups'])
+        pl.from_dicts(
+            deep_get(standings_content, 'standings', 'groups', 'groups', default={})
+        )
         .lazy()
         .select(
             pl.col('name').alias('confName'),
@@ -424,16 +415,16 @@ async def transform_from_standings(
 def _transform_box(
     json_raw: dict[str, Any],
     team_id: int
-    ) -> pl.LazyFrame:
+) -> pl.LazyFrame:
     box = _empty_df_with_schema(_BOX_SCHEMA).lazy()
-    athletes = _nested_get(json_raw, 'athletes')
+    athletes = deep_get(json_raw, 'athletes')
     if (
         athletes is None
         or len(athletes) == 0
     ):
         return box
 
-    first_athlete = _nested_get(athletes[0], 'athlete')
+    first_athlete = deep_get(athletes[0], 'athlete')
     if (
         first_athlete is None
         or 'id' not in first_athlete
@@ -478,17 +469,18 @@ def _transform_box(
 
 
 def _get_players_inter(game_json_raw: dict[str, Any]) -> pl.LazyFrame:
-    players = _nested_get(game_json_raw, 'boxscore', 'players')
-    if players is None:
+    players_content = deep_get(game_json_raw, 'boxscore', 'players')
+    if players_content is None:
         return _empty_df_with_schema(_BOX_SCHEMA).lazy()
 
     away_id, home_id = (
-        int(x['team']['id'])
-        for x in players
+        int(deep_get(x, 'team', 'id', default=-1))
+        for x in players_content
     )
     away_box_raw, home_box_raw = (
-        x['statistics'][0]
-        for x in players
+        # TODO: error handling?
+        x.get('statistics')[0]
+        for x in players_content
     )
 
     try:
@@ -526,8 +518,8 @@ async def transform_from_game(
     if game_json_raw is None:
         logger.warning('Couldn\'t get results for game id %d', game_id)
         return -1
-    attendance = _nested_get(game_json_raw, 'gameInfo', 'attendance')
-    competition_raw = _nested_get(game_json_raw, 'header', 'competitions')
+    attendance = deep_get(game_json_raw, 'gameInfo', 'attendance')
+    competition_raw = deep_get(game_json_raw, 'header', 'competitions')
 
     games = _empty_df_with_schema(_GAMES_SCHEMA)
     if competition_raw is not None:
@@ -731,7 +723,7 @@ async def transform_from_player(
         str(player_id),
         'player'
     )
-    athlete = _nested_get(
+    athlete = deep_get(
         player_raw,
         'page',
         'content',

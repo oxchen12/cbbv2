@@ -151,7 +151,7 @@ async def tqdm_gather(*fs, return_exceptions=False, always_cancel: Iterable[type
         try:
             return await f
         except always_cancel as e:
-            raise from e
+            raise e
         except Exception as e:
             return e
 
