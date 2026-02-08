@@ -416,7 +416,10 @@ class GameRecordCompleter(AbstractRecordCompleter[int]):
             'header', 'competitions',
             default=None
         )
-        if len(competitions) is None:
+        if (
+            competitions is None
+            or len(competitions) == 0
+        ):
             return None
         raw_date = competitions[0].get('date')
         if raw_date is None:
@@ -602,6 +605,7 @@ async def _batch_extract_to_queue(
             leave=False,
             disable=disable_tqdm,
             return_exceptions=True,
+            always_cancel=[OSError]
         )
         logger.debug(
             '[%s] %d tasks errored out', name, len([result for result in res if isinstance(result, Exception)])

@@ -137,17 +137,23 @@ async def get_rep_dates_seasons(
 
     return rep_dates
 
-async def tqdm_gather(*fs, return_exceptions=False, **kwargs):
-    """Custom implementation of tqdm gather handling task exceptions.
+
+async def tqdm_gather(*fs, return_exceptions=False, always_cancel: Iterable[type[Exception]] = None, **kwargs):
+    """Custom implementation of tqdm async gather handling task exceptions.
 
     Taken from: https://github.com/tqdm/tqdm/issues/1286
     """
     if not return_exceptions:
         return await tqdm.gather(*fs, **kwargs)
 
+    if always_cancel is None:
+        always_cancel = []
+
     async def wrap(f):
         try:
             return await f
+        except always_cancel as e:
+            raise from e
         except Exception as e:
             return e
 
