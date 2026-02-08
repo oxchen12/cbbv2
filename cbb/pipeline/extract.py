@@ -302,8 +302,13 @@ class CompleteRecord(Record):
     up_to_date: bool
 
 
+class RecordIngestor(AbstractImmediateIngestor[Record, Record]):
+    """Transient extract producer to push records to multiple successors."""
 
-class AbstractBatchProcessor[T](ABC):
+    def _process_item(self, record: Record) -> list[Record]:
+        return [record]
+
+
     """
     Extracts information from in-memory queued records for later use.
 
