@@ -43,15 +43,16 @@ T = TypeVar('T')
 
 # TODO: implement switching to women's, perhaps with a module manager
 # URLs
+LEAGUE = 'mens-college-basketball'
 API_PREFIX = (
-    'https://site.web.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball'
+    f'https://site.web.api.espn.com/apis/site/v2/sports/basketball/{LEAGUE}'
 )
 GAME_API_TEMPLATE = (
     f'{API_PREFIX}/summary?region=us&lang=en&contentorigin=espn&event={{}}'
 )
 CONFERENCES_API_URL = f'{API_PREFIX}/scoreboard/conferences?groups=50'
 
-WEB_PREFIX = 'https://www.espn.com/mens-college-basketball'
+WEB_PREFIX = f'https://www.espn.com/{LEAGUE}'
 STANDINGS_TEMPLATE = f'{WEB_PREFIX}/standings/_/season/{{}}'
 SCHEDULE_TEMPLATE = f'{WEB_PREFIX}/schedule/_/date/{{}}'
 PLAYER_TEMPLATE = f'{WEB_PREFIX}/player/_/id/{{}}'
