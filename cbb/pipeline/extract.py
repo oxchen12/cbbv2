@@ -439,106 +439,95 @@ class PlayerRecordCompleter(AbstractRecordCompleter[int]):
     def _complete_up_to_date(incomplete_record: IncompleteRecord[int]) -> bool:
         return True
 
-class RecordBatchGameIDExtractor(AbstractBatchProcessor[Record]):
-    """
-    Extracts game IDs from schedule payloads.
-    """
+
+class GameIDExtractor(AbstractImmediateIngestor[Record, IncompleteRecord]):
+    """Extracts game IDs from schedule page JSONs."""
 
     def __init__(
         self,
-        queue: asyncio.Queue[Record],
-        conn: duckdb.DuckDBPyConnection,
-        batch_size: int = AbstractBatchProcessor.DEFAULT_BATCH_SIZE
+        name: str,
+        queue: asyncio.Queue[Record | None]
     ):
-        super().__init__(queue, 'game_id_extractor', batch_size=batch_size)
-        self.conn = conn
+        super().__init__(name, queue)
+        self.seen_game_ids: set[int] = set()
 
-    def _get_buffer_game_ids(self):
-        game_ids: list[str] = []
-        for record in self.buffer:
-            if record is None:
-                continue
-            schedule = deep_get(
-                record.payload,
-                'page', 'content', 'events',
-                default={}
-            )
-            for events in schedule.values():
-                for event in events:
-                    game_id = event.get('id')
-                    if game_id is not None:
-                        game_ids.append(game_id)
-        return game_ids
-
-    async def _process(self):
-        game_ids = self._get_buffer_game_ids()
-
-        if len(game_ids) == 0:
-            logger.debug('[%s] No game ids in buffer.', self.name)
-            return
-
-        rows_written = update_discovery_manifest(
-            self.conn,
-            game_ids,
-            'game',
+    def _process_item(self, item: Record) -> list[IncompleteRecord]:
+        if item is None:
+            return []
+        game_ids: list[int] = []
+        schedule = cbb.pipeline._helpers.deep_get(
+            item.payload,
+            'page', 'content', 'events',
+            default={}
         )
+        for events in schedule.values():
+            for event in events:
+                game_id = event.get('id')
+                try:
+                    game_id = int(game_id)
+                    game_ids.append(game_id)
+                except (ValueError, TypeError):
+                    pass
+        new_game_ids = set(game_ids).difference(self.seen_game_ids)
+        self.seen_game_ids.update(new_game_ids)
+        return [
+            IncompleteRecord(
+                type_=RecordType.GAME,
+                payload={},
+                error=False,
+                raw_key=game_id,
+            )
+            for game_id in new_game_ids
+        ]
 
-        if rows_written < 0:
-            logger.debug('[%s] Something went wrong when writing game IDs', self.name)
-        else:
-            logger.debug('[%s] Wrote %d signature(s) to discovery manifest.', self.name, rows_written)
 
-
-class RecordBatchPlayerIDExtractor(AbstractBatchProcessor[Record]):
-    """
-    Extracts player IDs from game payloads.
-    """
+class PlayerIDExtractor(AbstractImmediateIngestor[Record, IncompleteRecord]):
+    """Extracts player IDs from game page JSONs."""
 
     def __init__(
         self,
-        queue: asyncio.Queue[Record],
-        conn: duckdb.DuckDBPyConnection,
-        batch_size: int = AbstractBatchProcessor.DEFAULT_BATCH_SIZE
+        name: str,
+        queue: asyncio.Queue[Record | None]
     ):
-        super().__init__(queue, 'player_id_extractor', batch_size=batch_size)
-        self.conn = conn
+        super().__init__(name, queue)
+        self.seen_player_ids: set[int] = set()
 
-    def _get_buffer_player_ids(self):
-        player_ids: list[str] = []
-        for record in self.buffer:
-            if record is None:
-                continue
-            boxes = deep_get(
-                record.payload,
-                'boxscore', 'players',
-                default=[]
-            )
-            for box in boxes:
-                stats = box.get('statistics', [])
-                if len(stats) == 0:
-                    continue
-                athletes = stats[0].get('athletes', [])
-                for ath in athletes:
-                    player_id = deep_get(
-                        ath,
-                        'athlete', 'id',
-                    )
-                    if player_id is not None:
-                        player_ids.append(player_id)
-        return player_ids
-
-    async def _process(self):
-        player_ids = self._get_buffer_player_ids()
-
-        if len(player_ids) == 0:
-            logger.debug('[%s] No player ids in buffer.', self.name)
-            return
-
-        rows_written = update_discovery_manifest(
-            self.conn,
-            player_ids,
-            'player',
+    def _process_item(self, item: Record) -> list[IncompleteRecord]:
+        if item is None:
+            return []
+        player_ids: list[int] = []
+        # TODO: refactor this into a helper or helpers for later transformation
+        boxes = cbb.pipeline._helpers.deep_get(
+            item.payload,
+            'boxscore', 'players',
+            default=[]
         )
+        for box in boxes:
+            stats = box.get('statistics', [])
+            if len(stats) == 0:
+                continue
+            athletes = stats[0].get('athletes', [])
+            for ath in athletes:
+                player_id = cbb.pipeline._helpers.deep_get(
+                    ath,
+                    'athlete', 'id',
+                )
+                try:
+                    player_id = int(player_id)
+                    player_ids.append(player_id)
+                except (ValueError, TypeError):
+                    pass
+        new_player_ids = set(player_ids).difference(self.seen_player_ids)
+        self.seen_player_ids.update(new_player_ids)
+        return [
+            IncompleteRecord(
+                type_=RecordType.PLAYER,
+                payload={},
+                error=False,
+                raw_key=player_id,
+            )
+            for player_id in new_player_ids
+        ]
 
         if rows_written < 0:
             logger.debug('[%s] Something went wrong when writing player IDs', self.name)
