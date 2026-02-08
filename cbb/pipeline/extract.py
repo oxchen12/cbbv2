@@ -529,54 +529,57 @@ class PlayerIDExtractor(AbstractImmediateIngestor[Record, IncompleteRecord]):
             for player_id in new_player_ids
         ]
 
-        if rows_written < 0:
-            logger.debug('[%s] Something went wrong when writing player IDs', self.name)
-        else:
-            logger.debug('[%s] Wrote %d signature(s) to discovery manifest.', self.name, rows_written)
 
-
+# extractor logic
 async def _batch_extract_to_queue(
-    queue: asyncio.Queue,
-    name: str,
+    queue: asyncio.Queue[IncompleteRecord[T]],
+    record_type: RecordType,
     keys: Iterable[T],
-    fetch_func: Callable[[T], Awaitable[JSONPayload]],
-    key_to_str_func: Callable[[T], str],
-    up_to_date_func: Callable[[T], bool],
-    cull_func: Callable[[JSONPayload], JSONPayload] = lambda payload: payload,
-    batch_size: int = RecordBatchWriter.DEFAULT_BATCH_SIZE,
+    fetch_func: Callable[[T], Awaitable[cbb.pipeline._helpers.JSONPayload]],
+    name: str | None = None,
+    # TODO: technically, this function can do any transformation (but culling is a subset and I will leave it for now)
+    cull_func: Callable[[cbb.pipeline._helpers.JSONPayload], cbb.pipeline._helpers.JSONPayload] = lambda
+        payload: payload,
+    batch_size: int = AbstractBatchIngestor.DEFAULT_BATCH_SIZE,
     disable_tqdm: bool = False,
 ):
     """
     Perform asynchronous batch extraction of records to a queue using the supplied pattern.
 
     Args:
-        queue (AsyncQueue): Write queue to push results to.
-        name (str): The name of the extract job.
+        queue (asyncio.Queue[IncompleteRecord[T]]): The queue to push results to.
+        record_type (RecordType): The type of record to extract.
         keys (Iterable[T]): The keys to extract records for.
         fetch_func (Callable[[T], Awaitable[JSONObject]]): The function to fetch the payload using the key.
-        key_to_str_func (Callable[[T], str]): The function to convert the key to string.
-        up_to_date_func (Callable[[T], bool]): The function to deduce whether the key's record is up to date.
-        cull_func (Callable[[JSONPayload], JSONPayload]): The function to cull unneeded keys from the payload.
-        batch_size (int): Size of the batches.
-        disable_tqdm (bool): Whether to disable tqdm progress bars.
+        name (str, optional): The name of the batch extraction task. Defaults to the record type label.
+        cull_func (Callable[[JSONPayload], JSONPayload], optional): The function to cull unneeded payload keys from the payload. Defaults to transient.
+        batch_size (int, optional): Size of the batches. Defaults to 300.
+        disable_tqdm (bool, optional): Whether to disable tqdm progress bars. Defaults to False.
     """
-    # Guarantee that no duplicates exist
+    # guarantee that no duplicates exist
     keys = set(keys)
+    if name is None:
+        name = record_type.label
+
+    # arg_type = get_args(T)
+    # logger.info(arg_type)
+    # if record_type.key_type != T:
+    #     raise ValueError(f'[{name}] Keys must match record key type (expected {record_type.key_type}, got {T})')
 
     async def fetch_record_and_put(key: T):
         try:
             payload = await fetch_func(key)
             payload = cull_func(payload)
         except aiohttp.ClientError as e:
-            payload = None
-        record = Record(
-            # TODO: generalize these to take the payload instead
-            key=key_to_str_func(key),
-            up_to_date=up_to_date_func(key),
+            logger.debug('[%s] Client encountered an error: %s', name, e)
+            payload = {}
+
+        record = IncompleteRecord(
+            type_=record_type,
             payload=payload,
-            error=payload is None
+            error=payload is None,
+            raw_key=key
         )
-        # logger.debug('Queue size: %d', queue.qsize())
         await queue.put(record)
 
     for batch in tqdm.tqdm(
@@ -594,17 +597,20 @@ async def _batch_extract_to_queue(
         res = await cbb.pipeline._helpers.tqdm_gather(
             *tasks,
             total=len(tasks),
-            desc=f'[{name}] Batch records',
+            desc=f'[{name}] Extraction batch records',
             position=1,
             leave=False,
-            disable=disable_tqdm
+            disable=disable_tqdm,
+            return_exceptions=True,
+        )
+        logger.debug(
+            '[%s] %d tasks errored out', name, len([result for result in res if isinstance(result, Exception)])
         )
 
 
 def _cull_keys(keys: Iterable[str | Sequence[str]]) -> Callable[
     [cbb.pipeline._helpers.JSONPayload], cbb.pipeline._helpers.JSONPayload]:
     """Creates a cull function to remove the supplied keys.
-    If iterable is provided as a key, search for the nested key to pop."""
 
     Args:
         keys (Iterable[str | Sequence[str]]): List of keys to extract. Pass nested keys as Sequence.
@@ -620,7 +626,6 @@ def _cull_keys(keys: Iterable[str | Sequence[str]]) -> Callable[
     return _cull_payload_keys
 
 
-# extractors
 async def extract_standings(
     client: AsyncClient,
     queue: asyncio.Queue,
@@ -634,7 +639,7 @@ async def extract_standings(
         client (AsyncClient): HTTP client for requesting data.
         queue (asyncio.Queue): Write queue to push results to.
         seasons (Iterable[int]): The seasons to extract standings for.
-        existing_seasons (Iterable[int]): Existing seasons to exclude when extracting standings.
+        existing_seasons (Iterable[int], optional): Existing seasons to exclude when extracting standings.
     """
     if existing_seasons is None:
         existing_seasons = []
@@ -644,11 +649,9 @@ async def extract_standings(
     logger.debug('Extracting standings...')
     await _batch_extract_to_queue(
         queue,
-        'standings',
+        RecordType.STANDINGS,
         seasons,
         client.get_raw_standings_json,
-        lambda season: str(season),
-        lambda season: get_season(dt.date.today()) > season
     )
     logger.debug('Finished extracting standings.')
 
@@ -668,15 +671,13 @@ async def extract_schedules_seasons(
         client (AsyncClient): HTTP client for requesting data.
         queue (asyncio.Queue): Write queue to push results to.
         seasons (Iterable[int]): The seasons to extract schedules for.
-        existing_dates (Iterable[dt.date]): Existing dates to exclude when extracting schedules.
+        existing_dates (Iterable[dt.date], optional): Existing dates to exclude when extracting schedules.
     """
-    if existing_dates is None:
-        existing_dates = []
 
     logger.debug('Getting representative dates...')
     rep_dates = await cbb.pipeline._helpers.get_rep_dates_seasons(client, seasons)
 
-    await extract_schedules(client, queue, rep_dates)
+    await extract_schedules(client, queue, rep_dates, existing_dates)
 
     # TODO: return value?
 
@@ -684,7 +685,8 @@ async def extract_schedules_seasons(
 async def extract_schedules(
     client: AsyncClient,
     queue: asyncio.Queue,
-    dates: Iterable[dt.date]
+    dates: Iterable[dt.date],
+    existing_dates: Iterable[dt.date] | None = None,
 ):
     """
     Extracts schedules for the given dates. Note that schedules
@@ -694,15 +696,19 @@ async def extract_schedules(
         client (AsyncClient): HTTP client for requesting data.
         queue (asyncio.Queue): Write queue to push results to.
         dates (Iterable[dt.date]): The dates to extract schedules for.
+        existing_dates (Iterable[dt.date], optional): Existing dates to exclude when extracting schedules.
     """
+    if existing_dates is None:
+        existing_dates = []
+
+    dates = set(dates).difference(existing_dates)
+
     logger.debug('Extracting schedules...')
     await _batch_extract_to_queue(
         queue,
-        'schedules',
+        RecordType.SCHEDULE,
         dates,
         client.get_raw_schedule_json,
-        lambda date: date.strftime(KEY_DATE_FORMAT),
-        lambda date: dt.date.today() > date
     )
     logger.debug('Finished extracting schedules.')
 
@@ -720,7 +726,7 @@ async def extract_games(
         client (AsyncClient): HTTP client for requesting data.
         queue (asyncio.Queue): Write queue to push results to.
         game_ids (Iterable[int]): The game IDs to extract info for.
-        existing_game_ids (Iterable[int]): Existing game IDs to exclude when extracting games.
+        existing_game_ids (Iterable[int], optional): Existing game IDs to exclude when extracting games.
     """
     if existing_game_ids is None:
         existing_game_ids = []
@@ -731,13 +737,10 @@ async def extract_games(
     logger.debug('Extracting games...')
     await _batch_extract_to_queue(
         queue,
-        'game',
+        RecordType.GAME,
         game_ids,
         client.get_raw_game_json,
-        lambda game_id: str(game_id),
-        # TODO: need to extract game start from payload OR manually refit
-        lambda game_id: True,
-        _cull_keys(keys_to_cull)
+        cull_func=_cull_keys(keys_to_cull)
     )
     logger.debug('Finished extracting games.')
 
@@ -755,7 +758,7 @@ async def extract_players(
         client (AsyncClient): HTTP client for requesting data.
         queue (asyncio.Queue): Write queue to push results to.
         player_ids (Iterable[int]): The players to extract info for.
-        existing_player_ids (Iterable[int]): Existing player IDs to exclude when extracting players.
+        existing_player_ids (Iterable[int], optional): Existing player IDs to exclude when extracting players.
     """
     if existing_player_ids is None:
         existing_player_ids = []
@@ -770,14 +773,10 @@ async def extract_players(
     logger.debug('Extracting players...')
     await _batch_extract_to_queue(
         queue,
-        'player',
+        RecordType.PLAYER,
         player_ids,
         client.get_raw_player_json,
-        lambda player_id: str(player_id),
-        # TODO: need to extract up to date from payload OR manually label with timestamp
-        #       to be fair, almost all player data I care about should not change
-        lambda player_id: True,
-        _cull_keys(keys_to_cull)
+        cull_func=_cull_keys(keys_to_cull)
     )
     logger.debug('Finished extracting players.')
 
@@ -785,34 +784,37 @@ async def extract_players(
 # abstracted extraction
 async def extract_lane(
     queue: asyncio.Queue,
-    conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
-    name: str,
+    record_type: RecordType,
     extractor: Callable[[AsyncClient, asyncio.Queue, ...], Awaitable[Any]],
-    params: dict[str, Any],
-    successors: Iterable[AbstractBatchProcessor[Record]] = None,
+    params: dict[str, Any] | None = None,
+    name: str | None = None,
+    successors: Iterable[AbstractIngestor[Record, Any]] | None = None,
 ):
     """
     Creates an extraction/batch writing lane for the given
     extraction task.
 
     Args:
-        queue (asyncio.Queue): Write queue to push results to.
-        conn (duckdb.DuckDBPyConnection): Connection to the document store.
+        queue (asyncio.Queue): Queue to push results to.
         client (AsyncClient): HTTP client for requesting data.
-        name (str): Document store table name.
+        record_type (RecordType): The type of record to extract.
         extractor (Callable[[AsyncClient, asyncio.Queue, ...], Awaitable[Any])): Extraction function that puts results in queue.
         params (dict[str, Any]): Extraction parameters.
-        successors (Iterable[AbstractBatchProcessor[Record]]): Batch writer successors.
-        max_queue_size (int): Max queue size.
+        name (str, optional): Name of the extraction task. Defaults to the record type label.
+        successors (Iterable[AbstractExtractProducer[Record]], optional): Batch writer successors.
     """
+    if name is None:
+        name = record_type.label
     if successors is None:
         successors = []
-    writer = RecordBatchWriter(queue, conn, name)
+    ingestor = RecordIngestor(name, queue)
     for successor in successors:
-        writer.add_successor(successor)
-    writer_task = asyncio.create_task(writer.run())
+        ingestor.add_successor(successor)
+    writer_task = asyncio.create_task(ingestor.run())
 
+    if params is None:
+        params = {}
     await extractor(client, queue, **params)
 
     # sentinel
@@ -820,216 +822,3 @@ async def extract_lane(
     await writer_task
 
     # TODO: return value?
-
-
-def _init_document_store(conn: duckdb.DuckDBPyConnection):
-    # TODO: this should NOT be part of the extract module
-    """Initialize the document store."""
-    conn.execute(
-        'CREATE TABLE IF NOT EXISTS Documents (\n'
-        '   key VARCHAR,\n'
-        '   name VARCHAR,\n'
-        '   timestamp TIMESTAMP,\n'
-        '   up_to_date BOOLEAN,\n'
-        '   payload JSON,\n'
-        ')'
-    )
-    conn.execute(
-        'CREATE TABLE IF NOT EXISTS DiscoveryManifest (\n'
-        '   key VARCHAR,\n'
-        '   name VARCHAR,\n'
-        '   PRIMARY KEY (key, name)\n'
-        ')'
-    )
-
-
-def _get_existing_keys(
-    conn: duckdb.DuckDBPyConnection,
-    name: str
-) -> list[str]:
-    # TODO: this should NOT be part of the extract module
-    res = conn.sql(
-        'SELECT key\n'
-        'FROM Documents\n'
-        'WHERE name = $name AND COALESCE(up_to_date, FALSE)\n',
-        params={'name': name}
-    )
-    # TODO: make this a generator since I can just
-    #       pass iterables to my extractors
-    return [
-        row[0]
-        for row in res.fetchall()
-    ]
-
-
-def _get_discovered_keys(
-    conn: duckdb.DuckDBPyConnection,
-    name: str
-):
-    # TODO: this should NOT be part of the extract module
-    res = conn.sql(
-        'SELECT key\n'
-        'FROM DiscoveryManifest\n'
-        'WHERE name = $name\n'
-        'EXCEPT\n'
-        'SELECT key FROM Documents WHERE name = $name AND up_to_date',
-        params={'name': name}
-    )
-    return [
-        row[0]
-        for row in res.fetchall()
-    ]
-
-
-async def extract_all(
-    conn: duckdb.DuckDBPyConnection,
-    client: AsyncClient,
-    seasons: Iterable[int],
-):
-    # TODO: this should NOT be part of the extract module
-    """
-    Orchestrates extraction for all channels of raw data.
-
-    Args:
-        conn (duckdb.DuckDBPyConnection): Connection to the document store.
-        client (AsyncClient): HTTP client for requesting data.
-        seasons (Iterable[int]): The seasons to extract data for.
-    """
-    _init_document_store(conn)
-    # TODO: extract standings
-    standings_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
-    existing_seasons = _get_existing_keys(conn, 'standings')
-    existing_seasons = [int(season) for season in existing_seasons]
-    await extract_lane(
-        standings_queue,
-        conn,
-        client,
-        'standings',
-        extract_standings,
-        {'seasons': seasons, 'existing_seasons': existing_seasons}
-    )
-
-    # TODO: extract schedules
-    schedules_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
-    existing_dates = _get_existing_keys(conn, 'schedule')
-    existing_dates = [dt.date.strptime(date, KEY_DATE_FORMAT) for date in existing_dates]
-    game_id_extractor = RecordBatchGameIDExtractor(
-        asyncio.Queue(maxsize=MAX_QUEUE_SIZE),
-        conn
-    )
-    game_id_extractor_task = asyncio.create_task(game_id_extractor.run())
-    await extract_lane(
-        schedules_queue,
-        conn,
-        client,
-        'schedule',
-        extract_schedules_seasons,
-        {'seasons': seasons, 'existing_dates': existing_dates},
-        [game_id_extractor],
-    )
-    await game_id_extractor_task
-
-    # TODO: for now, let's manually invalidate the game_ids that are after today
-
-    # TODO: extract games
-    games_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
-    game_ids = _get_discovered_keys(conn, 'game')
-    existing_game_ids = _get_existing_keys(conn, 'game')
-    existing_game_ids = [int(game_id) for game_id in existing_game_ids]
-    player_id_extractor = RecordBatchPlayerIDExtractor(
-        asyncio.Queue(maxsize=MAX_QUEUE_SIZE),
-        conn
-    )
-    asyncio.create_task(player_id_extractor.run())
-    await extract_lane(
-        games_queue,
-        conn,
-        client,
-        'game',
-        extract_games,
-        {'game_ids': game_ids, 'existing_game_ids': existing_game_ids},
-        [player_id_extractor]
-    )
-
-    players_queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
-    player_ids = _get_discovered_keys(conn, 'player')
-    existing_player_ids = _get_existing_keys(conn, 'player')
-    existing_player_ids = [int(player_id) for player_id in existing_player_ids]
-    # TODO: extract players
-    await extract_lane(
-        players_queue,
-        conn,
-        client,
-        'player',
-        extract_players,
-        {'player_ids': player_ids, 'existing_player_ids': existing_player_ids},
-    )
-
-# representative date helpers
-def _create_rep_date_range(
-    start: str,
-    end: str
-) -> list[dt.date]:
-    """
-    Get the necessary dates to fetch between start and end from schedules.
-    Assumes start and end are formatted like CALENDAR_DT_FORMAT.
-    """
-    start_date = dt.datetime.strptime(start, CALENDAR_DT_FORMAT).date()
-    start_date = max(
-        start_date,
-        get_season_start(start_date.year)
-    )
-    end_date = dt.datetime.strptime(end, CALENDAR_DT_FORMAT).date()
-    calendar = pl.date_range(
-        start_date,
-        end_date,
-        interval=dt.timedelta(days=1),
-        eager=True
-    )
-    # minimize pages to search by accessing schedules from adjacent dates
-    rep_dates = [
-        date
-        for i, date in enumerate(calendar)
-        if i % 3 == 1 or i == len(calendar) - 1
-    ]
-
-    return rep_dates
-
-
-async def _get_rep_dates_json(init_schedule: JSONPayload) -> list[dt.date]:
-    """Get the representative dates from the raw initial schedule."""
-    season_json = init_schedule['page']['content']['season']
-    # the calendar field for some reason doesn't get every date
-    # so instead, we manually generate all dates from start to end
-    rep_dates = _create_rep_date_range(
-        season_json['startDate'], season_json['endDate']
-    )
-
-    return rep_dates
-
-
-async def get_rep_dates_seasons(
-    client: AsyncClient,
-    seasons: Iterable[int]
-) -> list[dt.date]:
-    season_starts = [
-        get_season_start(season)
-        for season in seasons
-    ]
-    init_schedule_tasks = [
-        client.get_raw_schedule_json(season_start)
-        for season_start in season_starts
-    ]
-    init_schedules = await asyncio.gather(*init_schedule_tasks)
-    season_rep_date_tasks = [
-        _get_rep_dates_json(init_schedule)
-        for init_schedule in init_schedules
-    ]
-    season_rep_dates = await asyncio.gather(*season_rep_date_tasks)
-    rep_dates = [
-        date
-        for srd in season_rep_dates
-        for date in srd
-    ]
-
-    return rep_dates
