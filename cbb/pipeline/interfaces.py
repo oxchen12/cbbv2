@@ -23,9 +23,7 @@ def _is_timed_out(
 
 
 class AbstractIngestor[I, O](ABC):
-    """
-    Consumes data from a source, processes it, then produces to any number of
-    successor queues.
+    """Consumes data from a source, processes it, then produces to any number of successor queues.
 
     Attributes:
         I: the queue input type.
@@ -88,6 +86,13 @@ class AbstractIngestor[I, O](ABC):
 
 
 class AbstractImmediateIngestor[I, O](AbstractIngestor[I, O], ABC):
+    """AbstractExtractProducer that processes items immediately.
+    Best for CPU-bound tasks.
+
+    Attributes:
+        I: the queue input type.
+        O: the producer output type.
+    """
     @abstractmethod
     def _process_item(self, item: I) -> list[O]:
         """Processes an item. Should handle sentinel elegantly.
@@ -118,8 +123,7 @@ class AbstractImmediateIngestor[I, O](AbstractIngestor[I, O], ABC):
 
 
 class AbstractBatchIngestor[I, O](AbstractIngestor[I, O], ABC):
-    """
-    AbstractExtractProducer that processes items in batches.
+    """AbstractExtractProducer that processes items in batches.
     Best for I/O-bound tasks.
 
     Attributes:
@@ -127,7 +131,7 @@ class AbstractBatchIngestor[I, O](AbstractIngestor[I, O], ABC):
         O: the producer output type.
     """
 
-    DEFAULT_BATCH_SIZE = 300
+    DEFAULT_BATCH_SIZE = 200
     DEFAULT_FLUSH_TIMEOUT = 120  # time between flushes (sec)
 
     def __init__(
