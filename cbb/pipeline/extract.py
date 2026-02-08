@@ -67,7 +67,9 @@ def is_non_transient(code: int) -> bool:
     return 400 <= code < 500
 
 
-def _is_giveup_http(e: aiohttp.ClientResponseError) -> bool:
+def _is_giveup_http(e: Exception) -> bool:
+    if not isinstance(e, aiohttp.ClientResponseError):
+        return False
     return is_non_transient(e.status)
 
 
@@ -144,7 +146,7 @@ class AsyncClient:
                 f'`max_concurrents` must be between {AsyncClient.MIN_MAX_CONCURRENTS} and {AsyncClient.MAX_MAX_CONCURRENTS}'
             )
         self._semaphore = asyncio.Semaphore(max_concurrents)
-        self._session = None
+        self._session: aiohttp.ClientSession | None = None
 
     async def __aenter__(self) -> AsyncClient:
         if self._session is None:
@@ -199,7 +201,7 @@ class AsyncClient:
         logger.debug('Fetching from %s...', short_url)
         async with self._semaphore:
             get_start = time.perf_counter()
-            async with self._session.get(url) as resp:
+            async with self._session.get(url) as resp:  # type: ignore[union-attr]
                 get_end = time.perf_counter() - get_start
                 logger.debug(
                     'Got %d (%.2fs) from %s',
