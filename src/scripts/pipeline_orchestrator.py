@@ -2,7 +2,6 @@
 """Entry point for pipeline."""
 import asyncio
 import datetime as dt
-import logging
 import logging.config
 import sys
 from pathlib import Path
@@ -10,7 +9,7 @@ from typing import Iterable
 
 import duckdb
 
-from cbb.pipeline._helpers import create_rep_date_range, get_rep_dates_seasons
+from cbb.pipeline._helpers import get_rep_dates_seasons
 
 sys.path.insert(0, 'C:/Users/olive/iaa/side/cbbv2')
 
@@ -21,8 +20,7 @@ from cbb.pipeline.extract import (
     PlayerIDExtractor, PlayerRecordCompleter, Record,
     RecordIngestor, RecordType,
     ScheduleRecordCompleter, StandingsRecordCompleter, extract_games, extract_players,
-    extract_schedules, extract_schedules_seasons,
-    extract_standings
+    extract_schedules, extract_standings
 )
 from cbb.pipeline.load import DiscoveryBatchLoader, DocumentBatchLoader
 
@@ -73,6 +71,8 @@ logger = logging.getLogger(__name__)
 #     logging.getLogger(name).disabled = True
 logging.config.dictConfig(LOGGING_CONFIG)
 
+QUEUE_MAX_SIZE = 500
+
 def get_existing_keys(
     conn: duckdb.DuckDBPyConnection,
     record_type: RecordType,
@@ -111,17 +111,18 @@ def get_discovered_keys(
 async def _orchestrate(
     conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
-    seasons: Iterable[int]
+    seasons: Iterable[int],
+    queue_max_size: int = QUEUE_MAX_SIZE
 ):
     # TODO: setup loaders
-    discovery_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue()
+    discovery_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     discovery_loader = DiscoveryBatchLoader(
         'discovery_loader',
         discovery_queue,
         conn
     )
     discovery_loader_task = asyncio.create_task(discovery_loader.run())
-    documents_queue: asyncio.Queue[CompleteRecord | None] = asyncio.Queue()
+    documents_queue: asyncio.Queue[CompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     documents_loader = DocumentBatchLoader(
         'documents_loader',
         documents_queue,
@@ -130,7 +131,7 @@ async def _orchestrate(
     document_loader_task = asyncio.create_task(documents_loader.run())
 
     # TODO: setup record completer for standings
-    standings_completer_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue()
+    standings_completer_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     standings_completer = StandingsRecordCompleter(
         'standings_completer',
         standings_completer_queue,
@@ -139,7 +140,7 @@ async def _orchestrate(
     standings_completer_task = asyncio.create_task(standings_completer.run())
 
     # TODO: setup ingestor for standings
-    standings_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue()
+    standings_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     standings_ingestor = RecordIngestor(
         'standings',
         standings_queue,  # type: ignore[arg-type]
@@ -162,7 +163,7 @@ async def _orchestrate(
     await standings_completer_queue.put(None)
 
     # TODO: setup record completer for schedules
-    schedule_completer_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue()
+    schedule_completer_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     schedule_completer = ScheduleRecordCompleter(
         'schedule_completer',
         schedule_completer_queue
@@ -171,7 +172,7 @@ async def _orchestrate(
     schedule_completer_task = asyncio.create_task(schedule_completer.run())
 
     # TODO: setup game ID extractor for schedules
-    game_id_extractor_queue: asyncio.Queue[Record | None] = asyncio.Queue()
+    game_id_extractor_queue: asyncio.Queue[Record | None] = asyncio.Queue(maxsize=queue_max_size)
     game_id_extractor = GameIDExtractor(
         'game_id_extractor',
         game_id_extractor_queue,
@@ -180,7 +181,7 @@ async def _orchestrate(
     game_id_extractor_task = asyncio.create_task(game_id_extractor.run())
 
     # TODO: setup ingestor for schedules
-    schedules_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue()
+    schedules_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     schedules_ingestor = RecordIngestor(
         'schedule',
         schedules_queue,  # type: ignore[arg-type]
@@ -215,7 +216,7 @@ async def _orchestrate(
     await discovery_loader.flush()
 
     # TODO: setup record completer for game
-    game_completer_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue()
+    game_completer_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     game_completer = GameRecordCompleter(
         'game_completer',
         game_completer_queue,
@@ -224,7 +225,7 @@ async def _orchestrate(
     game_completer_task = asyncio.create_task(game_completer.run())
 
     # TODO: setup player ID extractor for game
-    player_id_extractor_queue: asyncio.Queue[Record | None] = asyncio.Queue()
+    player_id_extractor_queue: asyncio.Queue[Record | None] = asyncio.Queue(maxsize=queue_max_size)
     player_id_extractor = PlayerIDExtractor(
         'player_id_extractor',
         player_id_extractor_queue,
@@ -241,7 +242,7 @@ async def _orchestrate(
         int(game_id)
         for game_id in get_existing_keys(conn, RecordType.GAME)
     ]
-    games_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue()
+    games_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     game_ingestor = RecordIngestor(
         'game',
         games_queue  # type: ignore[arg-type]
@@ -269,7 +270,7 @@ async def _orchestrate(
     await discovery_loader.flush()
 
     # TODO: setup record completer for player
-    player_completer_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue()
+    player_completer_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     player_completer = PlayerRecordCompleter(
         'player_completer',
         player_completer_queue,
@@ -278,7 +279,7 @@ async def _orchestrate(
     player_completer_task = asyncio.create_task(player_completer.run())
 
     # TODO: setup ingestor for player
-    players_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue()
+    players_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     player_ingestor = RecordIngestor(
         'player',
         players_queue  # type: ignore[arg-type]
