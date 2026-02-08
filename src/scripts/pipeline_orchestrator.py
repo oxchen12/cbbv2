@@ -9,7 +9,7 @@ from typing import Iterable
 
 import duckdb
 
-from cbb.pipeline._helpers import get_rep_dates_seasons
+from cbb.pipeline.helpers import get_rep_dates_seasons
 
 sys.path.insert(0, 'C:/Users/olive/iaa/side/cbbv2')
 

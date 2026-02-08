@@ -21,7 +21,7 @@ import tqdm
 import tqdm.asyncio
 from bs4 import BeautifulSoup
 
-import cbb.pipeline._helpers
+import cbb.pipeline.helpers
 from .date import (get_season, validate_season)
 from .interfaces import (AbstractBatchIngestor, AbstractImmediateIngestor, AbstractIngestor)
 

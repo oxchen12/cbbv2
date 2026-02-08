@@ -13,8 +13,6 @@ from tqdm.asyncio import tqdm
 import cbb.pipeline.extract
 from cbb.pipeline.date import CALENDAR_DT_FORMAT, get_season_start
 
-# from cbb.pipeline.extract import AsyncClient
-
 JSONPayload = dict[str, Any]
 
 
