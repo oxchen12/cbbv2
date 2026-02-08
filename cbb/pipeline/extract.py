@@ -309,180 +309,135 @@ class RecordIngestor(AbstractImmediateIngestor[Record, Record]):
         return [record]
 
 
+class AbstractRecordCompleter[T](AbstractImmediateIngestor[IncompleteRecord, CompleteRecord], ABC):
     """
-    Extracts information from in-memory queued records for later use.
+    Completes input records with a specified raw key type and pushes to successors.
 
     Attributes:
-        T: the queue input type.
+        T: The type of the input raw keys.
     """
-    DEFAULT_BATCH_SIZE = 300
-    DEFAULT_FLUSH_TIMEOUT = 120  # time between flushes (sec)
-    DEFAULT_TIMEOUT = 600  # time between receiving new records (sec)
 
     def __init__(
         self,
-        queue: asyncio.Queue[T],
         name: str,
-        batch_size: int = DEFAULT_BATCH_SIZE
+        queue: asyncio.Queue[IncompleteRecord | None],
+        type_: RecordType
     ):
-        self.queue = queue
-        self.name = name
-        self.buffer: list[T] = []
-        self.batch_size = batch_size
-        self.successors: list[AbstractBatchProcessor[T]] = []
+        super().__init__(name, queue)
+        self.type_ = type_
 
-    def add_successor(self, successor: AbstractBatchProcessor[T]):
-        """Adds a successor to the processor."""
-        logger.debug('[%s] Adding successor [%s]', self.name, successor.name)
-        self.successors.append(successor)
+    def _process_item(self, record: IncompleteRecord) -> list[CompleteRecord]:
+        completed = self.complete_record(record)
+        if completed is None:
+            return []
+        return [completed]
 
-    async def notify_successors(self, batch: list[T]):
-        logger.debug('[%s] Notifying sucessors...', self.name)
+    def complete_record(self, incomplete_record: IncompleteRecord[T]) -> CompleteRecord | None:
+        if incomplete_record.type_ != self.type_:
+            return None
+        return CompleteRecord(
+            type_=incomplete_record.type_,
+            payload=incomplete_record.payload,
+            error=incomplete_record.error,
+            key=self._complete_key(incomplete_record),
+            up_to_date=self._complete_up_to_date(incomplete_record),
+        )
 
-        async def _notify_successor(successor: AbstractBatchProcessor[T], batch: list[T]):
-            for item in batch:
-                await successor.queue.put(item)
+    @staticmethod
+    def _complete_key(incomplete_record: IncompleteRecord) -> str:
+        return (
+            incomplete_record.type_
+            .raw_key_to_str(incomplete_record.raw_key)
+        )
 
-        async with asyncio.TaskGroup() as tg:
-            for successor in self.successors:
-                tg.create_task(_notify_successor(successor, batch))
-
-    async def end_successors(self):
-        logger.debug('[%s] Ending successors...', self.name)
-
-        async def end_successor(successor: AbstractBatchProcessor[T]):
-            await successor.queue.put(None)
-
-        for successor in self.successors:
-            async with asyncio.TaskGroup() as tg:
-                tg.create_task(end_successor(successor))
-
-    async def flush(self):
-        """Flushes the buffer and pushes records to successors."""
-        if (
-            len(self.buffer) == 0
-            or len(self.successors) == 1 and self.buffer[0] is None
-        ):
-            return
-
-        buffer_snapshot = self.buffer.copy()
-
-        logger.debug('[%s] Flushing buffer...', self.name)
-        await self._process()
-        self.buffer.clear()
-
-        # logger.debug('[%s] Notifying successors...', self.name)
-        await self.notify_successors(buffer_snapshot)
-
+    @staticmethod
     @abstractmethod
-    async def _process(self):
-        """Processes flushed records. Should handle sentinel."""
+    def _complete_up_to_date(incomplete_record: IncompleteRecord) -> bool:
         raise NotImplementedError('Child classes must implement this method.')
 
-    async def run(self):
-        record = {}
-        last_flush = time.monotonic()
-        last_record = time.monotonic()
-        n_records = 0
-        logger.debug('[%s] Starting processor...', self.name)
-        while record is not None:
-            # if time.monotonic() - last_record > self.DEFAULT_TIMEOUT:
-            #     logger.debug('')
-            #     record = None
-            #     continue
-            record = await self.queue.get()
-            last_record = time.monotonic()
-            if record is None:
-                logger.debug('[%s] Reached sentinel after %d record(s), exiting', self.name, n_records)
-                await self.flush()
-                await self.end_successors()
-                self.queue.task_done()
-                continue
 
-            n_records += 1
-            self.buffer.append(record)
-            if (
-                len(self.buffer) >= self.batch_size
-                or time.monotonic() - last_flush > self.DEFAULT_FLUSH_TIMEOUT
-            ):
-                last_flush = time.monotonic()
-                await self.flush()
-
-            self.queue.task_done()
-
-
-class RecordBatchWriter(AbstractBatchProcessor[Record]):
-    """
-    Writes raw document store records to a file.
-
-    Attributes:
-        name (str): The name of the writer, used to identify record source.
-        queue (asyncio.Queue): The queue to receive records from.
-        batch_size (int): The number of records in a write batch
-    """
+class StandingsRecordCompleter(AbstractRecordCompleter[int]):
+    """Completes standings records."""
 
     def __init__(
         self,
-        queue: asyncio.Queue[Record],
-        conn: duckdb.DuckDBPyConnection,
         name: str,
-        batch_size: int = AbstractBatchProcessor.DEFAULT_BATCH_SIZE
+        queue: asyncio.Queue[IncompleteRecord | None],
     ):
-        """
-        Args:
-            conn (duckdb.DuckDBPyConnection): The connection to the duckDB destination database.
-            name (str): The name of the writer, used to identify record source.
-            batch_size (int): The number of records in a write batch.
-        """
-        super().__init__(queue, name, batch_size=batch_size)
-        self.conn = conn
+        super().__init__(name, queue, RecordType.STANDINGS)
 
-    async def _process(self):
-        raw_batch = [
-            {
-                'key': record.key,
-                'name': self.name,
-                'up_to_date': record.up_to_date,
-                'timestamp': dt.datetime.now(),
-                'payload': json.dumps(record.payload)
-            }
-            for record in self.buffer
-            if record is not None and not record.error
-        ]
-        if len(raw_batch) == 0:
-            logger.debug('[%s] No valid records in buffer.', self.name)
-            return
-        batch = pl.from_dicts(raw_batch)
-        res = self.conn.execute(
-            'INSERT INTO Documents (key, name, timestamp, up_to_date, payload)\n'
-            'SELECT key, name, timestamp, up_to_date, payload FROM batch\n'
+    @staticmethod
+    def _complete_key(incomplete_record: IncompleteRecord[int]) -> str:
+        return str(incomplete_record.raw_key)
+
+    @staticmethod
+    def _complete_up_to_date(incomplete_record: IncompleteRecord[int]) -> bool:
+        return incomplete_record.raw_key < get_season(dt.date.today())
+
+
+class ScheduleRecordCompleter(AbstractRecordCompleter[dt.date]):
+    """Completes schedule records."""
+
+    def __init__(
+        self,
+        name: str,
+        queue: asyncio.Queue[IncompleteRecord | None],
+    ):
+        super().__init__(name, queue, RecordType.SCHEDULE)
+
+    @staticmethod
+    def _complete_up_to_date(incomplete_record: IncompleteRecord[dt.date]) -> bool:
+        return incomplete_record.raw_key < dt.date.today()
+
+
+class GameRecordCompleter(AbstractRecordCompleter[int]):
+    """Completes game records."""
+
+    def __init__(
+        self,
+        name: str,
+        queue: asyncio.Queue[IncompleteRecord | None],
+    ):
+        super().__init__(name, queue, RecordType.GAME)
+
+    @staticmethod
+    def _complete_up_to_date(incomplete_record: IncompleteRecord[int]) -> bool:
+        game_date = GameRecordCompleter._get_game_date(incomplete_record.payload)
+        if game_date is None:
+            # TODO: double-check; I think this is right because
+            #       new competitions should report their dates
+            return True
+        return game_date < dt.date.today()
+
+    @staticmethod
+    def _get_game_date(payload: cbb.pipeline._helpers.JSONPayload) -> dt.date | None:
+        competitions = cbb.pipeline._helpers.deep_get(
+            payload,
+            'header', 'competitions',
+            default=None
         )
-        rows = res.fetchall()[0][0]
-        if rows < 0:
-            logger.debug('[%s] An error occurred while writing to document store.')
-        else:
-            logger.debug('[%s] Wrote %d record(s) to document store.', self.name, rows)
+        if len(competitions) is None:
+            return None
+        raw_date = competitions[0].get('date')
+        if raw_date is None:
+            return None
+        date = dt.date.strptime(raw_date, '%Y-%m-%dT%H:%M%z')
+        return date
 
 
-def update_discovery_manifest(
-    conn: duckdb.DuckDBPyConnection,
-    keys: Sequence[T],
-    name: str,
-) -> int:
-    batch = pl.DataFrame(
-        {
-            'key': keys,
-            'name': [name] * len(keys),
-        }
-    )
-    res = conn.execute(
-        'INSERT INTO DiscoveryManifest (key, name)\n'
-        'SELECT key, name FROM batch\n'
-        'ON CONFLICT DO NOTHING'
-    )
-    rows = res.fetchall()[0][0]
-    return rows
+class PlayerRecordCompleter(AbstractRecordCompleter[int]):
+    """Completes player records."""
 
+    def __init__(
+        self,
+        name: str,
+        queue: asyncio.Queue[IncompleteRecord | None]
+    ):
+        super().__init__(name, queue, RecordType.PLAYER)
+
+    @staticmethod
+    def _complete_up_to_date(incomplete_record: IncompleteRecord[int]) -> bool:
+        return True
 
 class RecordBatchGameIDExtractor(AbstractBatchProcessor[Record]):
     """
