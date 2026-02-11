@@ -49,21 +49,21 @@ class DiscoveryBatchLoader(AbstractBatchIngestor[IncompleteRecord, None]):
         batch_table = pl.from_dicts(
             [
                 {
-                    'key': record.raw_key,
+                    'document_key': record.raw_key,
                     'record_type': record.type_.label,
                 }
                 for record in records
             ],
             strict=False,
             schema={
-                'key': pl.String,
+                'document_key': pl.String,
                 'record_type': pl.String,
             }
         )
 
         res = self.conn.execute(
-            'INSERT INTO DiscoveryManifest (key, record_type)\n'
-            'SELECT key, record_type\n'
+            'INSERT INTO DiscoveryManifest (document_key, record_type)\n'
+            'SELECT document_key, record_type\n'
             'FROM batch_table\n'
             'ON CONFLICT DO NOTHING'
         )
@@ -107,7 +107,7 @@ class DocumentBatchLoader(AbstractBatchIngestor[CompleteRecord, None]):
         batch_table = pl.from_dicts(
             [
                 {
-                    'key': str(record.key),
+                    'document_key': str(record.document_key),
                     'record_type': record.type_.label,
                     'timestamp': dt.datetime.now(),
                     'up_to_date': record.up_to_date,
@@ -118,8 +118,8 @@ class DocumentBatchLoader(AbstractBatchIngestor[CompleteRecord, None]):
         )
 
         res = self.conn.execute(
-            'INSERT INTO Documents (key, record_type, timestamp, up_to_date, payload)\n'
-            'SELECT key, record_type, timestamp, up_to_date, payload\n'
+            'INSERT INTO Documents (document_key, record_type, timestamp, up_to_date, payload)\n'
+            'SELECT document_key, record_type, timestamp, up_to_date, payload\n'
             'FROM batch_table'
         )
         rows = res.fetchall()[0][0]

@@ -283,6 +283,20 @@ class RecordType(Enum):
             case _:
                 return str(raw_key)
 
+    def str_to_raw_key(self, key: str) -> dt.date | int:
+        match self.key_type:
+            case dt.date:
+                return dt.date.strptime(key, KEY_DATE_FORMAT)
+            case int:
+                return int(key)
+
+    @staticmethod
+    def get_record_type(label: str) -> RecordType | None:
+        for record_type in RecordType:
+            if record_type.label == label:
+                return record_type
+        return None
+
 
 @dataclass(frozen=True)
 class Record:
@@ -298,7 +312,7 @@ class IncompleteRecord[T](Record):
 
 @dataclass(frozen=True)
 class CompleteRecord(Record):
-    key: str
+    document_key: str
     up_to_date: bool
 
 
@@ -339,7 +353,7 @@ class AbstractRecordCompleter[T](AbstractImmediateIngestor[IncompleteRecord, Com
             type_=incomplete_record.type_,
             payload=incomplete_record.payload,
             error=incomplete_record.error,
-            key=self._complete_key(incomplete_record),
+            document_key=self._complete_key(incomplete_record),
             up_to_date=self._complete_up_to_date(incomplete_record),
         )
 
@@ -597,7 +611,7 @@ async def _batch_extract_to_queue(
             fetch_record_and_put(key)
             for key in batch
         ]
-        res = await cbb.pipeline._helpers.tqdm_gather(
+        res = await cbb.pipeline.helpers.tqdm_gather(
             *tasks,
             total=len(tasks),
             desc=f'[{name}] Extraction batch records',

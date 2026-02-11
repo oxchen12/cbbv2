@@ -1,13 +1,13 @@
 CREATE TABLE IF NOT EXISTS Documents (
-   key VARCHAR,
+   document_key VARCHAR,
    record_type VARCHAR,
-   timestamp TIMESTAMP,
+   document_timestamp TIMESTAMP,
    up_to_date BOOLEAN,
    payload JSON,
 );
 
 CREATE TABLE IF NOT EXISTS DiscoveryManifest (
-   key VARCHAR,
+   document_key VARCHAR,
    record_type VARCHAR,
-   PRIMARY KEY (key, record_type)
+   PRIMARY KEY (document_key, record_type)
 );

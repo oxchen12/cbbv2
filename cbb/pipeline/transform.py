@@ -115,17 +115,18 @@ def _empty_df_with_schema(schema: dict[str, type[pl.DataType]]) -> pl.DataFrame:
 
 
 async def _fetch_payload(
-    raw_conn: duckdb.DuckDBPyConnection,
-    key: str,
-    name: str
+    store_conn: duckdb.DuckDBPyConnection,
+    document_key: Any,
+    record_type: RecordType
 ) -> JSONPayload:
-    res = raw_conn.sql(
+    document_key = record_type.raw_key_to_str(document_key)
+    res = store_conn.sql(
         'SELECT payload\n'
         'FROM Documents\n'
-        'WHERE key = $key AND name = $name\n'
+        'WHERE document_key = $document_key AND record_type = $record_type\n'
         'ORDER BY timestamp DESC\n'
         'LIMIT 1',
-        params={'key': key, 'name': name}
+        params={'document_key': document_key, 'record_type': record_type.label}
     )
     payload = res.fetchone()[0]
     if payload is None:
@@ -134,8 +135,8 @@ async def _fetch_payload(
 
 
 async def transform_from_schedule(
-    raw_conn: duckdb.DuckDBPyConnection,
-    transform_conn: duckdb.DuckDBPyConnection,
+    store_conn: duckdb.DuckDBPyConnection,
+    structured_conn: duckdb.DuckDBPyConnection,
     rep_date: dt.date
 ) -> int:
     """
@@ -143,9 +144,9 @@ async def transform_from_schedule(
     Populates Venues, Teams, Games, GameStatuses.
     """
     schedule_json_raw = await _fetch_payload(
-        raw_conn,
-        rep_date.strftime(KEY_DATE_FORMAT),
-        RecordType.SCHEDULE.label
+        store_conn,
+        rep_date,
+        RecordType.SCHEDULE
     )
 
     events = [
@@ -282,8 +283,8 @@ async def transform_from_schedule(
 
 
 async def transform_from_standings(
-    raw_conn: duckdb.DuckDBPyConnection,
-    transform_conn: duckdb.DuckDBPyConnection,
+    store_conn: duckdb.DuckDBPyConnection,
+    structured_conn: duckdb.DuckDBPyConnection,
     season: int
 ) -> int:
     """
@@ -295,9 +296,9 @@ async def transform_from_standings(
         return -1
 
     standings_json_raw = await _fetch_payload(
-        raw_conn,
-        str(season),
-        RecordType.STANDINGS.label
+        store_conn,
+        season,
+        RecordType.STANDINGS
     )
     standings_content = deep_get(standings_json_raw, 'page', 'content')
 
