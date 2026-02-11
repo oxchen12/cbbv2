@@ -56,6 +56,8 @@ class Table(Enum):
         'PlayerSeasons', ['player_id', 'team_id', 'season']
     )
     GAME_LOGS = _TableSpec('GameLogs', ['player_id', 'game_id'])
+    PLAYER_BOX_SCORES = _TableSpec('PlayerBoxScores', ['player_id', 'game_id'])
+    TEAM_BOX_SCORES = _TableSpec('TeamBoxScores', ['team_id', 'game_id'])
 
 
 class WriteAction(Enum):
