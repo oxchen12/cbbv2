@@ -25,8 +25,8 @@ CREATE TABLE IF NOT EXISTS ConferenceAlignments (
     conference_id INTEGER,
     season INTEGER,
     PRIMARY KEY (team_id, conference_id, season),
-    FOREIGN KEY (team_id) REFERENCES Teams (id),
-    FOREIGN KEY (conference_id) REFERENCES Conferences (id)
+--     FOREIGN KEY (team_id) REFERENCES Teams (id),
+--     FOREIGN KEY (conference_id) REFERENCES Conferences (id)
 );
 
 CREATE TABLE IF NOT EXISTS PlayTypes (
@@ -54,8 +54,8 @@ CREATE TABLE IF NOT EXISTS PlayerSeasons (
     season INTEGER NOT NULL,
     jersey INTEGER,
     PRIMARY KEY (player_id, team_id, season),
-    FOREIGN KEY (player_id) REFERENCES Players (id),
-    FOREIGN KEY (team_id) REFERENCES Teams (id)
+--     FOREIGN KEY (player_id) REFERENCES Players (id),
+--     FOREIGN KEY (team_id) REFERENCES Teams (id)
 );
 
 CREATE TABLE IF NOT EXISTS GameStatuses (
@@ -78,10 +78,10 @@ CREATE TABLE IF NOT EXISTS Games (
     has_shot_chart BOOLEAN,
     attendance INTEGER,
     complete_record BOOLEAN,
-    FOREIGN KEY (home_id) REFERENCES Teams (id),
-    FOREIGN KEY (away_id) REFERENCES Teams (id),
-    FOREIGN KEY (venue_id) REFERENCES Venues (id),
-    FOREIGN KEY (status_id) REFERENCES GameStatuses (id)
+--     FOREIGN KEY (home_id) REFERENCES Teams (id),
+--     FOREIGN KEY (away_id) REFERENCES Teams (id),
+--     FOREIGN KEY (venue_id) REFERENCES Venues (id),
+--     FOREIGN KEY (status_id) REFERENCES GameStatuses (id)
 );
 
 CREATE TABLE IF NOT EXISTS Plays (
@@ -102,9 +102,9 @@ CREATE TABLE IF NOT EXISTS Plays (
     y_coord INTEGER,
     timestamp DATETIME,
     PRIMARY KEY (game_id, sequence_id),
-    FOREIGN KEY (game_id) REFERENCES Games (id),
-    FOREIGN KEY (play_type_id) REFERENCES PlayTypes (id),
-    FOREIGN KEY (team_id) REFERENCES Teams (id),
+--     FOREIGN KEY (game_id) REFERENCES Games (id),
+--     FOREIGN KEY (play_type_id) REFERENCES PlayTypes (id),
+--     FOREIGN KEY (team_id) REFERENCES Teams (id),
     -- FOREIGN KEY (player_id) REFERENCES Players (id),
     -- FOREIGN KEY (assist_id) REFERENCES Players (id)
 );
@@ -116,8 +116,8 @@ CREATE TABLE IF NOT EXISTS GameLogs (
     started BOOLEAN NOT NULL,
     ejected BOOLEAN NOT NULL,
     PRIMARY KEY (player_id, game_id),
-    FOREIGN KEY (player_id) REFERENCES Players (id),
-    FOREIGN KEY (game_id) REFERENCES Games (id)
+    -- FOREIGN KEY (player_id) REFERENCES Players (id),
+    -- FOREIGN KEY (game_id) REFERENCES Games (id)
 );
 
 CREATE TABLE IF NOT EXISTS PlayerBoxScores (
