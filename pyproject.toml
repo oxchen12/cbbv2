@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cbbv2"
+description = "Data ingestion and analytics suite for college basketball data"
+authors = [{ name = "Oliver Chen", email = "emailoxc@gmail.com" }]
+version = "0.1.0"
+license = "MIT"
+license-files = ["LICENSE*"]
+requires-python = ">=3.13"
+dependencies = ["polars", "aiohttp", "duckdb", "backoff", "tqdm", "bs4"]
+
+[project.scripts]
+pipeline-orchestrator = "src:scripts"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cbb"]
