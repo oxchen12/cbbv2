@@ -2,27 +2,27 @@
 This module provides functions for transforming raw data
 from ESPN into pl.DataFrames.
 """
+import asyncio
 import datetime as dt
 import json
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 import duckdb
 import polars as pl
 import polars.selectors as cs
 
 from .database import (
-    Table,
+    DBWriteTask, Table,
     WriteAction,
-    write_db,
-    writes_db
+    get_write_tasks
 )
 from .date import (
     get_season,
     validate_season
 )
 from .extract import (
-    KEY_DATE_FORMAT, RecordType
+    RecordType
 )
 from .helpers import JSONPayload, deep_get
 
@@ -65,7 +65,8 @@ _PLAYS_INTER_SCHEMA = {
 }
 
 _BOX_SCHEMA = {
-    'id': pl.Int64,
+    'player_id': pl.Int64,
+    'is_totals': pl.Boolean,
     'first_name': pl.String,
     'last_name': pl.String,
     'position': pl.String,
@@ -73,7 +74,8 @@ _BOX_SCHEMA = {
     'played': pl.Boolean,
     'ejected': pl.Boolean,
     'jersey': pl.Int64,
-    'team_id': pl.Int64
+    'team_id': pl.Int64,
+    'stats': pl.Struct
 }
 
 _GAMES_SCHEMA = {
@@ -149,14 +151,19 @@ async def transform_from_schedule(
         RecordType.SCHEDULE
     )
 
+    date_schedules = deep_get(
+        schedule_json_raw,
+        'page', 'content', 'events',
+        default={}
+    ).values()
     events = [
         {
             k: v
             for k, v in event.items()
             if k in _SCHEDULE_KEEP
         }
-        for date in schedule_json_raw['page']['content']['events'].values()
-        for event in date
+        for date_schedule in date_schedules
+        for event in date_schedule
     ]
 
     if len(events) == 0:
@@ -168,7 +175,7 @@ async def transform_from_schedule(
         pl.from_dicts(events)
         .lazy()
         .select(
-            pl.col('id').cast(pl.Int64),
+            pl.col('id').str.to_integer(strict=False),
             pl.col('date')
             .str.to_datetime(time_zone='UTC').alias('datetime'),
             'tbd',
@@ -184,7 +191,7 @@ async def transform_from_schedule(
             games_inter
             .select(pl.col('venue').struct.unnest())
             .select(
-                pl.col('id').cast(pl.Int64),
+                pl.col('id').str.to_integer(strict=False),
                 pl.col('fullName').alias('name'),
                 _col_if_exists('address').struct.field('city'),
                 _col_if_exists('address').struct.field('state')
@@ -197,7 +204,7 @@ async def transform_from_schedule(
         games_inter
         .select(pl.col('status').struct.unnest())
         .select(
-            pl.col('id').cast(pl.Int64),
+            pl.col('id').str.to_integer(strict=False),
             'state',
             # remove details with OT specified
             pl.col('detail').str.replace(r'(.+)/\d*OT$', r'$1')
@@ -217,7 +224,7 @@ async def transform_from_schedule(
         .unnest('teams')
         .unique('id')
         .select(
-            pl.col('id').cast(pl.Int64),
+            pl.col('id').str.to_integer(strict=False),
             'location',
             pl.col('shortDisplayName').alias('mascot'),
             'abbrev',
@@ -234,13 +241,13 @@ async def transform_from_schedule(
             (
                 _col_if_exists('venue')
                 .struct.field('id')
-                .cast(pl.Int64)
+                .str.to_integer(strict=False)
                 .alias('venue_id')
             ),
             (
                 pl.col('status')
                 .struct.field('id')
-                .cast(pl.Int64)
+                .str.to_integer(strict=False)
                 .alias('status_id')
             ),
             # TODO: find better solution for jank hotfix
@@ -254,14 +261,14 @@ async def transform_from_schedule(
                 pl.col('teams')
                 .struct.field('home')
                 .struct.field('id')
-                .cast(pl.Int64)
+                .str.to_integer(strict=False)
                 .alias('home_id')
             ),
             (
                 pl.col('teams')
                 .struct.field('away')
                 .struct.field('id')
-                .cast(pl.Int64)
+                .str.to_integer(strict=False)
                 .alias('away_id')
             ),
         )
@@ -308,11 +315,14 @@ async def transform_from_standings(
 
     conferences = (
         pl.from_dicts(
-            deep_get(standings_content, 'headerscoreboard', 'collegeConfs', default={})
+            deep_get(
+                standings_content, 'headerscoreboard',
+                'collegeConfs', default={}
+            )
         )
         .filter(pl.col('name').ne('NCAA Division I'))
         .select(
-            pl.col('groupId').cast(pl.Int64).alias('id'),
+            pl.col('groupId').str.to_integer(strict=False).alias('id'),
             'name',
             pl.col('shortName').alias('abbrev')
         )
@@ -330,7 +340,10 @@ async def transform_from_standings(
 
     teams_confs_base = (
         pl.from_dicts(
-            deep_get(standings_content, 'standings', 'groups', 'groups', default={})
+            deep_get(
+                standings_content, 'standings',
+                'groups', 'groups', default={}
+            )
         )
         .lazy()
         .select(
@@ -377,7 +390,7 @@ async def transform_from_standings(
         )
         .select(
             'conference_id',
-            pl.col('id').alias('team_id').cast(pl.Int64),
+            pl.col('id').alias('team_id').str.to_integer(strict=False),
             'location',
             pl.col('shortDisplayName').alias('mascot'),
             'abbrev'
@@ -432,7 +445,58 @@ def _transform_box(
     ):
         return box
 
-    box = (
+    stat_names = box_json_raw.get('names')
+
+    def cast_stats(df: pl.LazyFrame) -> pl.LazyFrame:
+        def cast_box_stat(expr: pl.Expr) -> pl.Expr:
+            return (
+                expr
+                .cast(pl.String)
+                .str.to_integer(strict=False)
+            )
+
+        return (
+            df
+            .with_columns(
+                pl.col('stats').list.to_struct(fields=stat_names)
+            )
+            .unnest('stats', separator='_')
+            .select(
+                ~cs.starts_with('stats'),
+                # pull out stats and perform ops there due to issues with nesting
+                pl.struct(
+                    pl.col('stats_MIN').pipe(cast_box_stat).alias('minutes'),
+                    pl.col('stats_PTS').pipe(cast_box_stat).alias('points'),
+                    pl.col('stats_OREB').pipe(
+                        cast_box_stat
+                    ).alias('off_rebounds'),
+                    pl.col('stats_DREB').pipe(
+                        cast_box_stat
+                    ).alias('def_rebounds'),
+                    pl.col('stats_AST').pipe(cast_box_stat).alias('assists'),
+                    pl.col('stats_TO').pipe(cast_box_stat).alias('turnovers'),
+                    pl.col('stats_STL').pipe(cast_box_stat).alias('steals'),
+                    pl.col('stats_PF').pipe(
+                        cast_box_stat
+                    ).alias('personal_fouls'),
+                    pl.col('stats_FG')
+                    .cast(pl.String)
+                    .str.split('-')
+                    .list.eval(pl.element().str.to_integer(strict=False))
+                    .list.to_struct(fields=['fg_made', 'fg_attempted'])
+                    .struct.unnest(),
+                    pl.col('stats_3PT')
+                    .cast(pl.String)
+                    .str.split('-')
+                    .list.eval(pl.element().str.to_integer(strict=False))
+                    .list.to_struct(fields=['fg3_made', 'fg3_attempted'])
+                    .struct.unnest()
+                )
+                .alias('stats')
+            )
+        )
+
+    players_box = (
         pl.from_dicts(athletes)
         .lazy()
         .unnest('athlete')
@@ -442,7 +506,8 @@ def _transform_box(
             .alias('last_name'),
         )
         .select(
-            pl.col('id').cast(pl.Int64),
+            pl.col('id').alias('player_id').str.to_integer(strict=False),
+            pl.lit(False).alias('is_totals'),
             pl.col('displayName')
             .str.strip_suffix(pl.col('last_name'))
             .str.strip_chars(' ')
@@ -454,10 +519,39 @@ def _transform_box(
             pl.col('starter').alias('started'),
             ~pl.col('didNotPlay').alias('played'),
             'ejected',
-            _col_if_exists('jersey').cast(pl.Int64),
-            pl.lit(team_id).alias('team_id')
+            _col_if_exists('jersey').str.to_integer(strict=False),
+            pl.lit(team_id).alias('team_id'),
+            pl.col('stats')  # .pipe(cast_stats)
+        )
+        .pipe(cast_stats)
+    )
+
+    stat_totals = box_json_raw.get('totals')
+
+    team_box = (
+        pl.LazyFrame(
+            {
+                'is_totals': [True],
+                'team_id': [team_id],
+                'stats': [stat_totals]
+            },
+        )
+        # .with_columns(
+        #     pl.col('stats')# .pipe(cast_stats)
+        # )
+        .pipe(cast_stats)
+    )
+
+    box = (
+        pl.concat(
+            [
+                players_box,
+                team_box
+            ],
+            how='diagonal_relaxed'
         )
     )
+
     if 'jersey' not in box.collect_schema().names():
         box = (
             box
@@ -469,8 +563,11 @@ def _transform_box(
     return box
 
 
-def _get_players_inter(game_json_raw: dict[str, Any]) -> pl.LazyFrame:
-    players_content = deep_get(game_json_raw, 'boxscore', 'players')
+def _get_box_inter(game_json_raw: dict[str, Any]) -> pl.LazyFrame:
+    players_content = deep_get(
+        game_json_raw,
+        'boxscore', 'players'
+    )
     if players_content is None:
         return _empty_df_with_schema(_BOX_SCHEMA).lazy()
 
@@ -492,10 +589,8 @@ def _get_players_inter(game_json_raw: dict[str, Any]) -> pl.LazyFrame:
             ],
             how='vertical_relaxed'
         )
-        players_inter.collect()
+        players_inter.head(10).collect()
     except pl.exceptions.PolarsError as e:
-        logger.debug(_transform_box(away_box_raw, away_id).collect())
-        logger.debug(_transform_box(home_box_raw, home_id).collect())
         raise e
 
     return players_inter
@@ -512,9 +607,9 @@ async def transform_from_game(
     Updates Games.
     """
     game_json_raw = await _fetch_payload(
-        raw_conn,
-        str(game_id),
-        'game'
+        store_conn,
+        game_id,
+        RecordType.GAME
     )
     if game_json_raw is None:
         logger.warning('Couldn\'t get results for game id %d', game_id)
@@ -527,7 +622,7 @@ async def transform_from_game(
         games = (
             pl.from_dicts(competition_raw)
             .select(
-                pl.col('id').cast(pl.Int64),
+                pl.col('id').str.to_integer(strict=False),
                 _col_if_exists('neutralSite').alias('is_neutral_site'),
                 _col_if_exists('conferenceCompetition').alias('is_conference'),
                 _col_if_exists('shotChartAvailable').alias('has_shot_chart'),
@@ -565,14 +660,14 @@ async def transform_from_game(
                 _col_if_exists('coordinate_x').alias('x_coord'),
                 _col_if_exists('coordinate_y').alias('y_coord'),
                 _col_if_exists('wallclock').cast(pl.Datetime),
-                _col_if_exists('team_id').cast(pl.Int64),
+                _col_if_exists('team_id').str.to_integer(strict=False),
                 game_id=pl.lit(game_id),
                 player_id=(
                     _col_if_exists('participants')
                     .list.first()
                     .struct.unnest()
                     .struct.unnest()
-                    .cast(pl.Int64)
+                    .str.to_integer(strict=False)
                 ),
                 assist_id=(
                     pl.when(_col_if_exists('participants').list.len().gt(1))
@@ -581,21 +676,23 @@ async def transform_from_game(
                         .list.last()
                         .struct.unnest()
                         .struct.unnest()
-                        .cast(pl.Int64)
+                        .str.to_integer(strict=False)
                     )
                     .otherwise(None)
                 ),
                 period=pl.col('period_number'),
                 period_display=pl.col('period_displayValue'),
-                sequence_id=pl.col('sequenceNumber').cast(pl.Int64),
-                play_type_id=pl.col('type_id').cast(pl.Int64),
+                sequence_id=pl.col(
+                    'sequenceNumber'
+                ).str.to_integer(strict=False),
+                play_type_id=pl.col('type_id').str.to_integer(strict=False),
                 play_type_text=pl.col('type_text'),
                 clock_minutes=pl.col(
                     'clock_displayValue'
-                ).list.get(0).cast(pl.Int64),
+                ).list.get(0).str.to_integer(strict=False),
                 clock_seconds=pl.col(
                     'clock_displayValue'
-                ).list.get(1).cast(pl.Int64),
+                ).list.get(1).str.to_integer(strict=False),
                 description=pl.col('shortDescription'),
                 away_score=pl.col('awayScore'),
                 home_score=pl.col('homeScore'),
@@ -651,12 +748,14 @@ async def transform_from_game(
         .collect()
     )
 
-    players_inter = _get_players_inter(game_json_raw)
+    box_inter = _get_box_inter(game_json_raw)
+    players_inter = box_inter.filter(~pl.col('is_totals'))
+    teams_inter = box_inter.filter(pl.col('is_totals'))
 
     players = (
         players_inter
         .select(
-            'id',
+            pl.col('player_id').alias('id'),
             'first_name',
             'last_name',
             'position',
@@ -675,7 +774,7 @@ async def transform_from_game(
     player_seasons = (
         players_inter
         .select(
-            pl.col('id').alias('player_id'),
+            'player_id',
             'team_id',
             pl.lit(season).alias('season'),
             _col_if_exists('jersey')
@@ -686,7 +785,7 @@ async def transform_from_game(
     game_logs = (
         players_inter
         .select(
-            pl.col('id').alias('player_id'),
+            'player_id',
             pl.lit(game_id).alias('game_id'),
             'played',
             'started',
@@ -705,6 +804,27 @@ async def transform_from_game(
             (game_logs, Table.GAME_LOGS, WriteAction.INSERT)
         ],
         conn=transform_conn
+    player_box_scores = (
+        players_inter
+        .select(
+            'player_id',
+            pl.lit(game_id).alias('game_id'),
+
+        )
+        .collect()
+    )
+
+    team_box_scores = (
+        teams_inter
+        .select(
+            'team_id',
+            pl.lit(game_id).alias('game_id'),
+            pl.col('stats')
+            .struct.unnest()
+        )
+        .collect()
+    )
+
     )
 
     return sum(rows)
@@ -720,9 +840,9 @@ async def transform_from_player(
     Updates Players.
     """
     player_raw = await _fetch_payload(
-        raw_conn,
-        str(player_id),
-        'player'
+        store_conn,
+        player_id,
+        RecordType.PLAYER
     )
     athlete = deep_get(
         player_raw,
@@ -734,7 +854,7 @@ async def transform_from_player(
     )
 
     if athlete is None:
-        logger.debug('Player with id %d was not found')
+        logger.debug('Player with id %d was not found', player_id)
         return 0
 
     players = (
@@ -759,10 +879,10 @@ async def transform_from_player(
             .str.split(' ')
             .list.to_struct(fields=['height_ft', 'height_in'])
             .struct.unnest()
-            .cast(pl.Int64),
+            .str.to_integer(strict=False),
             _col_if_exists('wt')
             .str.replace(' lbs', '')
-            .cast(pl.Int64)
+            .str.to_integer(strict=False)
             .alias('weight'),
             pl.lit(True).alias('complete_record')
         )
