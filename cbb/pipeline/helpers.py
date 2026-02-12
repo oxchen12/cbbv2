@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import time
 from typing import Any, Iterable
 
 import polars as pl
@@ -150,9 +151,22 @@ async def tqdm_gather(*fs, return_exceptions=False, always_cancel: Iterable[type
     async def wrap(f):
         try:
             return await f
-        except always_cancel as e:
-            raise e
+        # except always_cancel as e:
+        #     raise e
         except Exception as e:
             return e
 
     return await tqdm.gather(*map(wrap, fs), **kwargs)
+
+
+def is_timed_out(
+    last: float,
+    timeout: float | int
+) -> bool:
+    """Helper to check whether time since last action exceeds timeout.
+
+    Args:
+        last (float): The time since last action. Should be calculated using time.monotonic().
+        timeout (float): The maximum time between actions.
+    """
+    return (time.monotonic() - last) > timeout

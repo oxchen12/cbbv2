@@ -13,32 +13,13 @@ import polars as pl
 from .extract import (
     CompleteRecord, IncompleteRecord
 )
-from .interfaces import AbstractBatchIngestor
+from .interfaces import AbstractBatchIngestor, AbstractBatchWriter
 
 logger = logging.getLogger(__name__)
 
 
-class DiscoveryBatchLoader(AbstractBatchIngestor[IncompleteRecord, None]):
+class DiscoveryBatchLoader(AbstractBatchWriter[IncompleteRecord, None]):
     """Loads discovered keys into the discovery manifest."""
-
-    def __init__(
-        self,
-        name: str,
-        queue: asyncio.Queue[IncompleteRecord | None],
-        conn: duckdb.DuckDBPyConnection,
-        batch_size: int = AbstractBatchIngestor.DEFAULT_BATCH_SIZE,
-        flush_timeout: int = AbstractBatchIngestor.DEFAULT_FLUSH_TIMEOUT
-    ):
-        """
-        Args:
-            name (str): The name of the loader.
-            queue (asyncio.Queue): The queue to pull records from.
-            conn (duckdb.DuckDBPyConnection): The connection to the document store database.
-            batch_size (int): The number of items to process in each batch.
-            flush_timeout (int): The maximum time between batch flushes. Unused if batch_process is False.
-        """
-        super().__init__(name, queue, batch_size=batch_size, flush_timeout=flush_timeout)
-        self.conn = conn
 
     def _process_batch(self, records: list[IncompleteRecord]) -> list[None]:
         """Loads discovered keys into the discovery manifest."""
@@ -76,27 +57,8 @@ class DiscoveryBatchLoader(AbstractBatchIngestor[IncompleteRecord, None]):
         return []
 
 
-class DocumentBatchLoader(AbstractBatchIngestor[CompleteRecord, None]):
+class DocumentBatchLoader(AbstractBatchWriter[CompleteRecord, None]):
     """Loads extracted records into the document store."""
-
-    def __init__(
-        self,
-        name: str,
-        queue: asyncio.Queue[CompleteRecord | None],
-        conn: duckdb.DuckDBPyConnection,
-        batch_size: int = AbstractBatchIngestor.DEFAULT_BATCH_SIZE,
-        flush_timeout: int = AbstractBatchIngestor.DEFAULT_FLUSH_TIMEOUT
-    ):
-        """
-        Args:
-            name (str): The name of the loader.
-            queue (asyncio.Queue): The queue to pull records from.
-            conn (duckdb.DuckDBPyConnection): The connection to the document store database.
-            batch_size (int): The number of items to process in each batch.
-            flush_timeout (int): The maximum time between batch flushes. Unused if batch_process is False.
-        """
-        super().__init__(name, queue, batch_size=batch_size, flush_timeout=flush_timeout)
-        self.conn = conn
 
     def _process_batch(self, records: list[CompleteRecord]) -> list[None]:
         """Loads extracted records into the document store."""

@@ -138,9 +138,9 @@ async def _fetch_payload(
 
 async def transform_from_schedule(
     store_conn: duckdb.DuckDBPyConnection,
-    structured_conn: duckdb.DuckDBPyConnection,
+    write_queue: asyncio.Queue[Iterable[DBWriteTask]],
     rep_date: dt.date
-) -> int:
+):
     """
     Extract data from the schedules for the given (representative) date.
     Populates Venues, Teams, Games, GameStatuses.
@@ -276,24 +276,23 @@ async def transform_from_schedule(
         .collect()
     )
 
-    rows = writes_db(
-        items=[
-            (venues, Table.VENUES, WriteAction.INSERT),
-            (teams, Table.TEAMS, WriteAction.INSERT),
-            (game_statuses, Table.GAME_STATUSES, WriteAction.INSERT),
-            (games, Table.GAMES, WriteAction.INSERT)
-        ],
-        conn=transform_conn
+    tasks = get_write_tasks(
+        (venues, Table.VENUES, WriteAction.INSERT),
+        (teams, Table.TEAMS, WriteAction.INSERT),
+        (game_statuses, Table.GAME_STATUSES, WriteAction.INSERT),
+        (games, Table.GAMES, WriteAction.INSERT)
     )
 
-    return sum(rows)
+    await write_queue.put(tasks)
+
+    return None
 
 
 async def transform_from_standings(
     store_conn: duckdb.DuckDBPyConnection,
-    structured_conn: duckdb.DuckDBPyConnection,
+    write_queue: asyncio.Queue[Iterable[DBWriteTask]],
     season: int
-) -> int:
+):
     """
     Extract data from the standings page for the given season.
     Populates Teams, Conferences, ConferenceAlignments.
@@ -414,24 +413,23 @@ async def transform_from_standings(
         .collect()
     )
 
-    rows = writes_db(
-        items=[
-            (conferences, Table.CONFERENCES, WriteAction.INSERT),
-            (teams, Table.TEAMS, WriteAction.INSERT),
-            (conference_alignments, Table.CONFERENCE_ALIGNMENTS, WriteAction.INSERT)
-        ],
-        conn=transform_conn
+    tasks = get_write_tasks(
+        (conferences, Table.CONFERENCES, WriteAction.INSERT),
+        (teams, Table.TEAMS, WriteAction.INSERT),
+        (conference_alignments, Table.CONFERENCE_ALIGNMENTS, WriteAction.INSERT)
     )
 
-    return sum(rows)
+    await write_queue.put(tasks)
+
+    return None
 
 
 def _transform_box(
-    json_raw: dict[str, Any],
+    box_json_raw: dict[str, Any],
     team_id: int
 ) -> pl.LazyFrame:
     box = _empty_df_with_schema(_BOX_SCHEMA).lazy()
-    athletes = deep_get(json_raw, 'athletes')
+    athletes = deep_get(box_json_raw, 'athletes')
     if (
         athletes is None
         or len(athletes) == 0
@@ -597,10 +595,10 @@ def _get_box_inter(game_json_raw: dict[str, Any]) -> pl.LazyFrame:
 
 
 async def transform_from_game(
-    raw_conn: duckdb.DuckDBPyConnection,
-    transform_conn: duckdb.DuckDBPyConnection,
+    store_conn: duckdb.DuckDBPyConnection,
+    write_queue: asyncio.Queue[Iterable[DBWriteTask]],
     game_id: int
-) -> int:
+):
     """
     Extract data from the game page.
     Populates Plays, PlayTypes, Players, PlayerSeasons, GameLogs.
@@ -794,16 +792,6 @@ async def transform_from_game(
         .collect()
     )
 
-    rows = writes_db(
-        items=[
-            (games, Table.GAMES, WriteAction.UPDATE),
-            (play_types, Table.PLAY_TYPES, WriteAction.INSERT),
-            (players, Table.PLAYERS, WriteAction.INSERT),
-            (plays, Table.PLAYS, WriteAction.INSERT),
-            (player_seasons, Table.PLAYER_SEASONS, WriteAction.INSERT),
-            (game_logs, Table.GAME_LOGS, WriteAction.INSERT)
-        ],
-        conn=transform_conn
     player_box_scores = (
         players_inter
         .select(
@@ -825,16 +813,27 @@ async def transform_from_game(
         .collect()
     )
 
+    tasks = get_write_tasks(
+        (games, Table.GAMES, WriteAction.UPDATE),
+        (play_types, Table.PLAY_TYPES, WriteAction.INSERT),
+        (players, Table.PLAYERS, WriteAction.INSERT),
+        (plays, Table.PLAYS, WriteAction.INSERT),
+        (player_seasons, Table.PLAYER_SEASONS, WriteAction.INSERT),
+        (game_logs, Table.GAME_LOGS, WriteAction.INSERT),
+        (player_box_scores, Table.PLAYER_BOX_SCORES, WriteAction.INSERT),
+        (team_box_scores, Table.TEAM_BOX_SCORES, WriteAction.INSERT),
     )
 
-    return sum(rows)
+    await write_queue.put(tasks)
+
+    return None
 
 
 async def transform_from_player(
-    raw_conn: duckdb.DuckDBPyConnection,
-    transform_conn: duckdb.DuckDBPyConnection,
+    store_conn: duckdb.DuckDBPyConnection,
+    write_queue: asyncio.Queue[Iterable[DBWriteTask]],
     player_id: int
-) -> int:
+):
     """
     Extract data from the player page.
     Updates Players.
@@ -888,11 +887,10 @@ async def transform_from_player(
         )
     )
 
-    rows = write_db(
-        players,
-        Table.PLAYERS,
-        transform_conn,
-        WriteAction.UPDATE
+    tasks = get_write_tasks(
+        (players, Table.PLAYERS, WriteAction.UPDATE),
     )
 
-    return rows
+    await write_queue.put(tasks)
+
+    return None

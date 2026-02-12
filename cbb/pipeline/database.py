@@ -2,14 +2,19 @@
 This module provides functions and classes for database
 operations within the parent module.
 """
+import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
-from typing import Sequence, TypeVar
+from typing import Iterable, Sequence, TypeVar
 
 import duckdb
 import polars as pl
+
+from cbb.pipeline.helpers import is_timed_out
+from cbb.pipeline.interfaces import AbstractBatchIngestor, AbstractBatchWriter
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +145,8 @@ def _filter_null_primary_key(
     table_spec: _TableSpec
 ) -> pl.DataFrame:
     """Sanitizes the DataFrame of any null primary key rows."""
+    if df.height == 0:
+        return df
     return (
         df
         .filter(
@@ -217,31 +224,118 @@ def get_affected_rows(rows: list[int] | int):
     return sum(r for r in rows if r >= 0)
 
 
+@dataclass(frozen=True)
+class DBWriteTask:
+    df: pl.DataFrame
+    table: Table
+    write_action: WriteAction
+
+
+@dataclass(frozen=True)
+class DBWriteTaskResult:
+    task: DBWriteTask
+    rows: int
+
+
+def get_write_tasks(*configs: tuple[pl.DataFrame, Table, WriteAction]):
+    return [
+        DBWriteTask(*config)
+        for config in configs
+    ]
+
+class TransformedWriter(AbstractBatchWriter[Iterable[DBWriteTask], None]):
+    DEFAULT_BATCH_SIZE = 1_000
+
+    def __init__(
+        self,
+        name: str,
+        queue: asyncio.Queue[Iterable[DBWriteTask] | None],
+        conn: duckdb.DuckDBPyConnection,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        flush_timeout: int = AbstractBatchIngestor.DEFAULT_FLUSH_TIMEOUT,
+    ):
+        super().__init__(
+            name, queue, conn,
+            batch_size=batch_size,
+            flush_timeout=flush_timeout
+        )
+        # TODO: make df buffer for each table
+        self.buffer: list[DBWriteTask] = []
+
+    def _process_batch(self, items: list[DBWriteTask]) -> list[None]:
+        writes_db(
+            self.buffer,
+            self.conn
+        )
+
+        return []
+
+    async def run(self):
+        """Runs the processor."""
+        last_flush = time.monotonic()
+        n_records = 0
+        logger.debug('[%s] Starting processor...', self.name)
+        while True:
+            tasks = await self.queue.get()
+            if tasks is None:
+                logger.debug('[%s] Reached sentinel after %d item(s), exiting', self.name, n_records)
+                await self.flush()
+                await self.end_successors()
+                self.queue.task_done()
+                break
+
+            n_records += 1
+            self.buffer.extend(tasks)
+            if (
+                self.batch_ready
+                or is_timed_out(last_flush, self.flush_timeout)
+            ):
+                processed_items = await self.flush()
+                last_flush = time.monotonic()
+                await self.notify_successors(processed_items)
+
+            self.queue.task_done()
+
+
+
 def writes_db(
-    items: list[tuple[pl.DataFrame, Table, WriteAction]],
+    tasks: list[DBWriteTask],
     conn: duckdb.DuckDBPyConnection,
 ) -> list[int]:
     """
     Inserts multiple DataFrames into the specified tables.
     Returns the number of affected rows.
     """
-    logger.debug('Writing tables...')
-    rows = []
-    for df, table, on_conflict in items:
-        rows.append(
-            write_db(
-                df, table, conn,
-                write_action=on_conflict
+    logger.debug('Performing %d write tasks...', len(tasks))
+    conn.execute('BEGIN TRANSACTION')
+    try:
+        # TODO: can probably do better error handling here
+        results = [
+            DBWriteTaskResult(
+                task,
+                write_db(
+                    task.df, task.table, conn,
+                    write_action=task.write_action,
+                )
             )
-        )
+            for task in tasks
+        ]
+        conn.execute('COMMIT')
+    except Exception as e:
+        conn.execute('ROLLBACK')
+        raise e
 
-    results = zip(items, rows)
-    failed_tables = [res[0][1].value.name for res in results if res[1] == -1]
+    failed_tables = [
+        res.task.table.name
+        for res in results
+        if res.rows == -1
+    ]
     if len(failed_tables) > 0:
         logger.debug(
-            'Failed to insert to the following tables: %s', failed_tables
+            'Failed write tasks to the following tables: %s', failed_tables
         )
 
+    rows = [result.rows for result in results]
     success_rows = get_affected_rows(rows)
     logger.debug('Affected %s rows', success_rows)
 

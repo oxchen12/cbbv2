@@ -5,21 +5,12 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any, TypeVar
 
+import duckdb
+
+import cbb.pipeline.helpers
+
 logger = logging.getLogger(__name__)
 T = TypeVar('T')
-
-
-def _is_timed_out(
-    last: float,
-    timeout: float | int
-) -> bool:
-    """Helper to check whether time since last action exceeds timeout.
-
-    Args:
-        last (float): The time since last action. Should be calculated using time.monotonic().
-        timeout (float): The maximum time between actions.
-    """
-    return (time.monotonic() - last) > timeout
 
 
 class AbstractIngestor[I, O](ABC):
@@ -191,12 +182,10 @@ class AbstractBatchIngestor[I, O](AbstractIngestor[I, O], ABC):
     async def run(self):
         """Runs the processor."""
         last_flush = time.monotonic()
-        last_item = time.monotonic()
         n_records = 0
         logger.debug('[%s] Starting processor...', self.name)
         while True:
             item = await self.queue.get()
-            last_item = time.monotonic()
             if item is None:
                 logger.debug('[%s] Reached sentinel after %d item(s), exiting', self.name, n_records)
                 await self.flush()
@@ -208,10 +197,33 @@ class AbstractBatchIngestor[I, O](AbstractIngestor[I, O], ABC):
             self.buffer.append(item)
             if (
                 self.batch_ready
-                or _is_timed_out(last_flush, self.flush_timeout)
+                or cbb.pipeline.helpers.is_timed_out(last_flush, self.flush_timeout)
             ):
                 processed_items = await self.flush()
                 last_flush = time.monotonic()
                 await self.notify_successors(processed_items)
 
             self.queue.task_done()
+
+class AbstractBatchWriter[I, O](AbstractBatchIngestor[I, O], ABC):
+    def __init__(
+        self,
+        name: str,
+        queue: asyncio.Queue[I | None],
+        conn: duckdb.DuckDBPyConnection,
+        batch_size: int = AbstractBatchIngestor.DEFAULT_BATCH_SIZE,
+        flush_timeout: int = AbstractBatchIngestor.DEFAULT_FLUSH_TIMEOUT
+    ):
+        """
+        Args:
+            queue (asyncio.Queue): The source queue.
+            name (str): The name of this producer.
+            conn (duckdb.DuckDBPyConnection): The connection to the database.
+            batch_size (int): The number of items to process in each batch.
+            flush_timeout (int): The maximum time between batch flushes. Unused if batch_process is False.
+        """
+        super().__init__(name, queue)
+        self.conn = conn
+        self.batch_size = batch_size
+        self.flush_timeout = flush_timeout
+        self.buffer: list[I] = []

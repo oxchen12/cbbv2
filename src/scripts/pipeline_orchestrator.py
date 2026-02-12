@@ -4,16 +4,24 @@ import asyncio
 import datetime as dt
 import logging.config
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Awaitable, Callable, Iterable, Iterator
 
 import duckdb
+import pyarrow as pa
+from tqdm import tqdm
 
-from cbb.pipeline.helpers import get_rep_dates_seasons
+from cbb.pipeline.helpers import get_rep_dates_seasons, tqdm_gather
+from cbb.pipeline.transform import (
+    transform_from_game, transform_from_player, transform_from_schedule,
+    transform_from_standings
+)
 
+# TODO: replace this with proper env
 sys.path.insert(0, 'C:/Users/olive/iaa/side/cbbv2')
 
-from cbb.pipeline.database import init_document_store
+from cbb.pipeline.database import DBWriteTask, TransformedWriter, init_db, init_document_store
 from cbb.pipeline.date import MAX_SEASON, MIN_SEASON, get_season_range
 from cbb.pipeline.extract import (
     AsyncClient, CompleteRecord, GameIDExtractor, GameRecordCompleter, IncompleteRecord, KEY_DATE_FORMAT,
@@ -72,13 +80,16 @@ logger = logging.getLogger(__name__)
 logging.config.dictConfig(LOGGING_CONFIG)
 
 QUEUE_MAX_SIZE = 500
+MAX_COROUTINES = 100
+BATCH_FACTOR = 2
+
 
 def get_existing_keys(
     conn: duckdb.DuckDBPyConnection,
     record_type: RecordType,
 ) -> list[str]:
     res = conn.sql(
-        'SELECT key\n'
+        'SELECT document_key\n'
         'FROM Documents\n'
         'WHERE record_type = $record_type AND COALESCE(up_to_date, FALSE)\n',
         params={'record_type': record_type.label}
@@ -91,16 +102,45 @@ def get_existing_keys(
     ]
 
 
+def _get_id_table(record_type: RecordType) -> str | None:
+    match record_type:
+        case RecordType.GAME:
+            return 'Games'
+        case RecordType.PLAYER:
+            return 'Player'
+        case _:
+            return None
+
+
+def _get_existing_structured_keys(
+    conn: duckdb.DuckDBPyConnection,
+    record_type: RecordType
+) -> pa.RecordBatchReader:
+    id_table = _get_id_table(record_type)
+    if id_table is None:
+        # return a dummy batch reader
+        return pa.RecordBatchReader.from_batches(
+            pa.schema([('id', pa.int64())]),
+            []
+        )
+    res = conn.sql(
+        'SELECT CAST(id AS VARCHAR) as id FROM query_table($table)\n'
+        'WHERE coalesce(complete_record, FALSE)',
+        params={'table': id_table}
+    )
+    return res.arrow()
+
+
 def get_discovered_keys(
     conn: duckdb.DuckDBPyConnection,
     record_type: RecordType,
 ) -> list[str]:
     res = conn.sql(
-        'SELECT key\n'
+        'SELECT document_key\n'
         'FROM DiscoveryManifest\n'
         'WHERE record_type = $record_type\n'
         'EXCEPT\n'
-        'SELECT key FROM Documents WHERE record_type = $record_type AND COALESCE(up_to_date, FALSE)',
+        'SELECT document_key FROM Documents WHERE record_type = $record_type AND COALESCE(up_to_date, FALSE)',
         params={'record_type': record_type.label}
     )
     return [
@@ -108,8 +148,137 @@ def get_discovered_keys(
         for row in res.fetchall()
     ]
 
+
+def _get_store_batches(
+    store_conn: duckdb.DuckDBPyConnection,
+    structured_conn: duckdb.DuckDBPyConnection,
+    record_type: RecordType,
+    batch_size: int = MAX_COROUTINES * BATCH_FACTOR
+) -> Iterator[list[str]]:
+    """Yields batches of document store keys for the given type(s)."""
+    existing_keys = _get_existing_structured_keys(structured_conn, record_type)
+
+    # TODO: look into using a batch reader instead
+    res = store_conn.execute(
+        'SELECT DISTINCT document_key, record_type\n'
+        'FROM Documents\n'
+        'WHERE record_type=$record_type\n'
+        'AND NOT EXISTS (SELECT id FROM existing_keys WHERE document_key = id)',
+        parameters={'record_type': record_type.label}
+    )
+    while True:
+        batch = [
+            row[0]
+            for row in res.fetchmany(batch_size)
+        ]
+        if len(batch) == 0:
+            break
+        yield batch
+
+
+@dataclass(frozen=True)
+class _TransformTaskConfig:
+    document_key: str
+    label: str
+    cursor: duckdb.DuckDBPyConnection
+
+    @property
+    def transform_function(self) -> Callable[
+        [duckdb.DuckDBPyConnection, asyncio.Queue[Iterable[DBWriteTask]], dt.date | int], Awaitable[int]]:
+        async def transform_unfound(*args, **kwargs):
+            logger.warning('Unrecognized record type: %s', self.label)
+            return -1
+
+        match self.label:
+            case 'standings':
+                return transform_from_standings
+            case 'schedule':
+                return transform_from_schedule
+            case 'game':
+                return transform_from_game
+            case 'player':
+                return transform_from_player
+            case _:
+                return transform_unfound
+
+    def get_task(self, write_queue: asyncio.Queue[Iterable[DBWriteTask]]) -> Awaitable[int]:
+        record_type = RecordType.get_record_type(self.label)
+
+        return self.transform_function(
+            self.cursor,
+            write_queue,
+            record_type.str_to_raw_key(self.document_key)
+        )
+
+    def get_task_str(self):
+        return f'{self.transform_function}({self.document_key})'
+
+
+async def transform_all(
+    store_conn: duckdb.DuckDBPyConnection,
+    structured_conn: duckdb.DuckDBPyConnection,
+    max_coroutines: int = MAX_COROUTINES
+):
+    batch_store_cursor = store_conn.cursor()
+    batch_structured_cursor = structured_conn.cursor()
+    record_types = (
+        RecordType.STANDINGS,
+        RecordType.SCHEDULE,
+        RecordType.GAME,
+        RecordType.PLAYER,
+    )
+    write_queue = asyncio.Queue(maxsize=TransformedWriter.DEFAULT_BATCH_SIZE)
+    transformed_writer = TransformedWriter(
+        'transformed_writer',
+        write_queue,
+        structured_conn
+    )
+    transformed_writer_task = asyncio.create_task(transformed_writer.run())
+    for record_type in record_types:
+        for batch in tqdm(
+            _get_store_batches(
+                batch_store_cursor,
+                batch_structured_cursor,
+                record_type,
+                batch_size=max_coroutines * BATCH_FACTOR
+            ),
+            position=0,
+            leave=True,
+            desc=f'Transform batches ({record_type.label})',
+        ):
+            task_configs = (
+                _TransformTaskConfig(
+                    document_key,
+                    record_type.label,
+                    store_conn.cursor()
+                )
+                for document_key in batch
+            )
+
+            tasks = [
+                task_config.get_task(write_queue)
+                for task_config in task_configs
+            ]
+
+            # TODO: decide what to do with `res`
+            res = await tqdm_gather(
+                # res = await asyncio.gather(
+                *tasks,
+                total=len(tasks),
+                desc='Transform tasks',
+                position=1,
+                leave=False,
+                return_exceptions=True
+            )
+            # num_failed_tasks = len([result for result in res if isinstance(res, Exception)])
+            # if num_failed_tasks > 0:
+            #     logger.debug('Transform failed in %d tasks', num_failed_tasks)
+            await transformed_writer.let_flush()
+    await transformed_writer_task
+
+
 async def _orchestrate(
-    conn: duckdb.DuckDBPyConnection,
+    store_conn: duckdb.DuckDBPyConnection,
     client: AsyncClient,
     seasons: Iterable[int],
     queue_max_size: int = QUEUE_MAX_SIZE
@@ -119,14 +288,14 @@ async def _orchestrate(
     discovery_loader = DiscoveryBatchLoader(
         'discovery_loader',
         discovery_queue,
-        conn
+        store_conn
     )
     discovery_loader_task = asyncio.create_task(discovery_loader.run())
     documents_queue: asyncio.Queue[CompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     documents_loader = DocumentBatchLoader(
         'documents_loader',
         documents_queue,
-        conn
+        store_conn
     )
     document_loader_task = asyncio.create_task(documents_loader.run())
 
@@ -151,7 +320,7 @@ async def _orchestrate(
     # TODO: run extract lane for standings
     existing_seasons = [
         int(season)
-        for season in get_existing_keys(conn, RecordType.STANDINGS)
+        for season in get_existing_keys(store_conn, RecordType.STANDINGS)
     ]
     await extract_standings(
         client,
@@ -194,7 +363,7 @@ async def _orchestrate(
     dates = await get_rep_dates_seasons(client, seasons)
     existing_dates = [
         dt.date.strptime(date, KEY_DATE_FORMAT)
-        for date in get_existing_keys(conn, RecordType.SCHEDULE)
+        for date in get_existing_keys(store_conn, RecordType.SCHEDULE)
     ]
     await extract_schedules(
         client,
@@ -236,11 +405,11 @@ async def _orchestrate(
     # TODO: setup ingestor for games
     discovered_games = [
         int(game_id)
-        for game_id in get_discovered_keys(conn, RecordType.GAME)
+        for game_id in get_discovered_keys(store_conn, RecordType.GAME)
     ]
     existing_games = [
         int(game_id)
-        for game_id in get_existing_keys(conn, RecordType.GAME)
+        for game_id in get_existing_keys(store_conn, RecordType.GAME)
     ]
     games_queue: asyncio.Queue[IncompleteRecord | None] = asyncio.Queue(maxsize=queue_max_size)
     game_ingestor = RecordIngestor(
@@ -290,11 +459,11 @@ async def _orchestrate(
     # TODO: setup extract lane for players
     discovered_players = [
         int(player_id)
-        for player_id in get_discovered_keys(conn, RecordType.PLAYER)
+        for player_id in get_discovered_keys(store_conn, RecordType.PLAYER)
     ]
     existing_players = [
         int(player_id)
-        for player_id in get_existing_keys(conn, RecordType.PLAYER)
+        for player_id in get_existing_keys(store_conn, RecordType.PLAYER)
     ]
     await extract_players(
         client,
@@ -335,9 +504,24 @@ async def orchestrate(
 
 
 if __name__ == '__main__':
-    asyncio.run(
-        orchestrate(
-            end_season=2025,
-            erase=False
-        )
-    )
+    logger.info('Starting pipeline...')
+    # asyncio.run(
+    #     orchestrate(
+    #         end_season=2025,
+    #         erase=False
+    #     )
+    # )
+
+    store_uri = init_document_store()
+    structured_uri = init_db(erase=True)
+
+    assert store_uri is not None
+    assert structured_uri is not None
+
+    with (
+        duckdb.connect(store_uri) as store_conn,
+        duckdb.connect(structured_uri) as structured_conn
+    ):
+        asyncio.run(transform_all(store_conn, structured_conn))
+
+    logger.info('Finished pipeline.')
