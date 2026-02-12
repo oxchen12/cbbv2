@@ -274,6 +274,7 @@ async def transform_all(
             # if num_failed_tasks > 0:
             #     logger.debug('Transform failed in %d tasks', num_failed_tasks)
             await transformed_writer.let_flush()
+    await write_queue.put(None)
     await transformed_writer_task
 
 

@@ -225,10 +225,15 @@ def get_affected_rows(rows: list[int] | int):
 
 
 @dataclass(frozen=True)
-class DBWriteTask:
-    df: pl.DataFrame
+class DBWriteDestination:
     table: Table
     write_action: WriteAction
+
+
+@dataclass(frozen=True)
+class DBWriteTask:
+    df: pl.DataFrame
+    write_destination: DBWriteDestination
 
 
 @dataclass(frozen=True)
@@ -239,36 +244,66 @@ class DBWriteTaskResult:
 
 def get_write_tasks(*configs: tuple[pl.DataFrame, Table, WriteAction]):
     return [
-        DBWriteTask(*config)
+        DBWriteTask(
+            config[0],
+            DBWriteDestination(config[1], config[2])
+        )
         for config in configs
     ]
 
+
 class TransformedWriter(AbstractBatchWriter[Iterable[DBWriteTask], None]):
-    DEFAULT_BATCH_SIZE = 1_000
+    DEFAULT_BATCH_ROW_COUNT = 50_000
 
     def __init__(
         self,
         name: str,
         queue: asyncio.Queue[Iterable[DBWriteTask] | None],
         conn: duckdb.DuckDBPyConnection,
-        batch_size: int = DEFAULT_BATCH_SIZE,
+        batch_row_count: int = DEFAULT_BATCH_ROW_COUNT,
         flush_timeout: int = AbstractBatchIngestor.DEFAULT_FLUSH_TIMEOUT,
     ):
         super().__init__(
             name, queue, conn,
-            batch_size=batch_size,
+            batch_size=-1,
             flush_timeout=flush_timeout
         )
-        # TODO: make df buffer for each table
-        self.buffer: list[DBWriteTask] = []
+        self.batch_row_count = batch_row_count
+        self.buffer: dict[DBWriteDestination, pl.DataFrame] = {}
 
     def _process_batch(self, items: list[DBWriteTask]) -> list[None]:
+        tasks = [
+            DBWriteTask(df, write_destination)
+            for write_destination, df in self.buffer.items()
+        ]
+
         writes_db(
-            self.buffer,
+            tasks,
             self.conn
         )
 
         return []
+
+    def _extend_tasks(
+        self,
+        tasks: list[DBWriteTask],
+    ):
+        for task in tasks:
+            buffered_rows = self.buffer.get(task.write_destination, None)
+            if buffered_rows is None:
+                extended_rows = task.df
+            else:
+                extended_rows = pl.concat([buffered_rows, task.df], how='diagonal_relaxed')
+            self.buffer[task.write_destination] = extended_rows
+
+    @property
+    def batch_ready(self) -> bool:
+        rows = sum(
+            df.height
+            for df in self.buffer.values()
+        )
+
+        return rows >= self.batch_row_count
 
     async def run(self):
         """Runs the processor."""
@@ -285,7 +320,7 @@ class TransformedWriter(AbstractBatchWriter[Iterable[DBWriteTask], None]):
                 break
 
             n_records += 1
-            self.buffer.extend(tasks)
+            self._extend_tasks(tasks)
             if (
                 self.batch_ready
                 or is_timed_out(last_flush, self.flush_timeout)
@@ -295,7 +330,6 @@ class TransformedWriter(AbstractBatchWriter[Iterable[DBWriteTask], None]):
                 await self.notify_successors(processed_items)
 
             self.queue.task_done()
-
 
 
 def writes_db(
@@ -314,8 +348,8 @@ def writes_db(
             DBWriteTaskResult(
                 task,
                 write_db(
-                    task.df, task.table, conn,
-                    write_action=task.write_action,
+                    task.df, task.write_destination.table, conn,
+                    write_action=task.write_destination.write_action,
                 )
             )
             for task in tasks
@@ -326,7 +360,7 @@ def writes_db(
         raise e
 
     failed_tables = [
-        res.task.table.name
+        res.task.write_destination.table.name
         for res in results
         if res.rows == -1
     ]
