@@ -81,7 +81,7 @@ logging.config.dictConfig(LOGGING_CONFIG)
 
 QUEUE_MAX_SIZE = 500
 MAX_COROUTINES = 100
-BATCH_FACTOR = 2
+BATCH_FACTOR = 5
 
 
 def get_existing_keys(
@@ -222,12 +222,12 @@ async def transform_all(
     batch_store_cursor = store_conn.cursor()
     batch_structured_cursor = structured_conn.cursor()
     record_types = (
-        RecordType.STANDINGS,
-        RecordType.SCHEDULE,
+        # RecordType.STANDINGS,
+        # RecordType.SCHEDULE,
         RecordType.GAME,
         RecordType.PLAYER,
     )
-    write_queue = asyncio.Queue(maxsize=TransformedWriter.DEFAULT_BATCH_SIZE)
+    write_queue = asyncio.Queue(maxsize=max_coroutines * BATCH_FACTOR)
     transformed_writer = TransformedWriter(
         'transformed_writer',
         write_queue,
@@ -240,7 +240,7 @@ async def transform_all(
                 batch_store_cursor,
                 batch_structured_cursor,
                 record_type,
-                batch_size=max_coroutines * BATCH_FACTOR
+                batch_size=max_coroutines
             ),
             position=0,
             leave=True,

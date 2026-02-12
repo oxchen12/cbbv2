@@ -253,7 +253,7 @@ def get_write_tasks(*configs: tuple[pl.DataFrame, Table, WriteAction]):
 
 
 class TransformedWriter(AbstractBatchWriter[Iterable[DBWriteTask], None]):
-    DEFAULT_BATCH_ROW_COUNT = 50_000
+    DEFAULT_BATCH_ROW_COUNT = 100_000
 
     def __init__(
         self,
@@ -297,13 +297,17 @@ class TransformedWriter(AbstractBatchWriter[Iterable[DBWriteTask], None]):
             self.buffer[task.write_destination] = extended_rows
 
     @property
-    def batch_ready(self) -> bool:
+    def _buffer_row_count(self) -> int:
         rows = sum(
             df.height
             for df in self.buffer.values()
         )
+        
+        return rows
 
-        return rows >= self.batch_row_count
+    @property
+    def batch_ready(self) -> bool:
+        return self._buffer_row_count >= self.batch_row_count
 
     async def run(self):
         """Runs the processor."""
